@@ -1,11 +1,106 @@
 import sys
 import os
 
+compile_pass = [
+# a1
+"""
+(compiler-passes '(
+    verify-scheme
+    generate-x86-64
+))
+""",
+
+# a2
+"""
+(compiler-passes '(
+    verify-scheme
+    expose-frame-var
+    flatten-program
+    generate-x86-64
+))
+""",
+
+# a3
+"""
+(compiler-passes '(
+    verify-scheme
+    finalize-locations
+    expose-frame-var
+    expose-basic-blocks
+    flatten-program
+    generate-x86-64
+))
+""",
+
+# a4
+"""
+(compiler-passes '(
+    verify-scheme
+    uncover-register-conflict
+    assign-registers
+    discard-call-live
+    finalize-locations
+    expose-frame-var
+    expose-basic-blocks
+    flatten-program
+    generate-x86-64
+))
+""",
+
+# a5
+"""
+(compiler-passes '(
+  verify-scheme
+  uncover-frame-conflict
+  introduce-allocation-forms
+  (iterate
+    select-instructions
+    uncover-register-conflict
+    assign-registers
+    (break when everybody-home?)
+    assign-frame
+    finalize-frame-locations)
+  discard-call-live
+  finalize-locations
+  expose-frame-var
+  expose-basic-blocks
+  flatten-program
+  generate-x86-64
+))
+""",
+
+# a6
+"""
+(compiler-passes '(
+  verify-scheme
+  remove-complex-opera*
+  flatten-set!
+  impose-calling-conventions
+  uncover-frame-conflict
+  introduce-allocation-forms
+  (iterate
+    select-instructions
+    uncover-register-conflict
+    assign-registers
+    (break when everybody-home?)
+    assign-frame
+    finalize-frame-locations)
+  discard-call-live
+  finalize-locations
+  expose-frame-var
+  expose-basic-blocks
+  flatten-program
+  generate-x86-64
+))
+""",
+]
+
 def main():
     arguments = sys.argv[1 : ]
     with open("test.scm", "w") as file:
         task = arguments[0]
         task_id = task[task.index("a") + 1 : ]
+        compile_passes = compile_pass[task_id]
         file.write(
 f"""
 (eval-when (compile load eval)
@@ -39,10 +134,7 @@ f"""
                 (andmap all-home? `(,body ,body* ...))]
             [,x (error who "invalid Program ~s" x)])))
 
-(compiler-passes '(
-  verify-scheme
-  generate-x86-64
-))
+{compile_passes}
 
 (load "{task}/tests{task_id}.scm")
 """)
