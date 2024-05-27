@@ -2,6 +2,9 @@ import sys
 import os
 
 compile_pass = [
+"""
+""",
+
 # a1
 """
 (compiler-passes '(
@@ -423,7 +426,7 @@ def main():
     arguments = sys.argv[1 : ]
     with open("test.scm", "w") as file:
         task = arguments[0]
-        task_id = task[task.index("a") + 1 : ]
+        task_id = int(task[task.index("a") + 1 : ])
         compile_passes = compile_pass[task_id]
         file.write(
 f"""
