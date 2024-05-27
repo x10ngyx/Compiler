@@ -34,7 +34,7 @@ Once you are ready to get started, you need to:
 
 We have provided a whole toolchain. To test your compiler, you just need to:
 
-1. Type in `make a*` under your root directory. For example, if you want to test the `a1`, just run `make a1`.
+1. Type in `make TASK_NAME=a*` under your root directory. For example, if you want to test the `a1`, just run `make TASK_NAME=a1`.
 2. Now, there will be a `test.scm` under the root. Load this into Chez Scheme, and type
     - `(test-all)` to run all of the valid tests,
     - `(test-one 'program)` to run an individual test with program `'program`.
