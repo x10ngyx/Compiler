@@ -38,6 +38,8 @@ We have provided a whole toolchain. To test your compiler, you just need to:
 2. Now, there will be a `test.scm` under the root. Load this into Chez Scheme, and type
     - `(test-all)` to run all of the valid tests,
     - `(test-one 'program)` to run an individual test with program `'program`.
+3. (Optional) You can use `(tracer #t)` to check output of each pass.
+4. Make sure you pass all the valid tests in each assignment.
 
 ## Other advice
 
