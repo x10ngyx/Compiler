@@ -1,0 +1,3 @@
+(test-one `(letrec ([double$0 (lambda ()
+                         (begin (set! rax (+ rax rax)) (r15)))])
+      (begin (set! rax 10) (double$0))))
