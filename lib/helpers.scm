@@ -64,9 +64,9 @@
 ;;;   (difference set1 set2) returns a new set containing all the
 ;;;   items from set1 that were not in set2
 ;;;
-;;;   (int32? x) returns true iff x is a 32-bit exact integer
+;;;   *(int32? x) returns true iff x is a 32-bit exact integer
 ;;;
-;;;   (int64? x) returns true iff x is a 64-bit exact integer
+;;;   *(int64? x) returns true iff x is a 64-bit exact integer
 ;;;
 ;;;   (uint6? x) returns true iff x is an unsigned 6-bit exact integer
 ;;;
@@ -89,7 +89,7 @@
 ;;;   *(frame-var->index fv) returns the frame variable's index, e.g.,
 ;;;   the call (frame-var->index 'fv3) returns 3.
 ;;;
-;;;   (index->frame-var n) returns the frame variable corresponding to
+;;;   *(index->frame-var n) returns the frame variable corresponding to
 ;;;   the index n, e.g., the call (index->frame-var 3) returns fv3.
 ;;;
 ;;;   fv0, fv1, ..., fvN, where N is (max-frame-var)
@@ -98,7 +98,7 @@
 
 
 ;;;
-;;;   (uvar? x) returns true iff x is a unique variable, i.e., one
+;;;   *(uvar? x) returns true iff x is a unique variable, i.e., one
 ;;;   whose name is of the form x.n
 ;;;
 ;;;   *(label? x) returns true iff x is a label, i.e., one whose name
@@ -121,11 +121,11 @@
 ;;;   *(make-disp-opnd reg offset) returns a disp-opnd record, used to
 ;;;   represent a displacement-mode operand
 ;;;
-;;;   (disp-opnd? x) returns true iff x is a disp-opnd
+;;;   *(disp-opnd? x) returns true iff x is a disp-opnd
 ;;;
-;;;   (disp-opnd-reg disp-opnd) returns the disp-opnd's register
+;;;   *(disp-opnd-reg disp-opnd) returns the disp-opnd's register
 ;;;
-;;;   (disp-opnd-offset disp-opnd) returns the disp-opnd's offset
+;;;   *(disp-opnd-offset disp-opnd) returns the disp-opnd's offset
 ;;;
 ;;;   (make-index-opnd reg offset) returns an index-opnd record, used to
 ;;;   represent a index-mode operand
@@ -180,6 +180,10 @@
 ;;;   (make-begin '(e1 (begin (begin e2 e3) e4) e5)) =>
 ;;;   (begin e1 e2 e3 e4 e5).
 ;;;
+
+
+
+
 ;;;  ; the remainder support the scheme-dependent portion of the compiler
 ;;;
 ;;;   fixnum-bits is the width of a fixnum
