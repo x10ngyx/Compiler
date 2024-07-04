@@ -1,7 +1,208 @@
+(define (deep-copy obj)
+    (cond
+        ((null? obj) '())
+        ((pair? obj) (cons (deep-copy (car obj)) (deep-copy (cdr obj))))
+        (else obj)))
+
 ;   verify-scheme
 ;   do nothing
 
 (define (verify-scheme x) x) 
+
+;   uncover-register-conflicts
+;   add conflict-graph for each body
+
+(define (uncover-register-conflict program)
+    ; dangerous variable
+    ; deep-copy before used
+    (define cg `())
+
+    (define (uncover-program program)
+        (match program
+            [(letrec ([,lb* (lambda () ,[uncover-body -> bd1*])] ...) ,[uncover-body -> bd2])
+                `(letrec ([,lb* (lambda () ,bd1*)] ...) ,bd2)]))
+
+    (define (uncover-body body)
+        (match body
+            [(locals (,uv* ...) ,tl)
+                (begin
+                    (set! cg `((,uv*) ...))
+                    (uncover-tail tl)
+                    `(locals (,uv* ...) (register-conflict ,(deep-copy cg) ,tl)))]))
+
+    (define (try-to-add x live-set)
+        (if (or (register? x) (uvar? x))
+            (set-cons x live-set)
+            live-set))
+    (define (try-to-delete x live-set)
+        (if (or (register? x) (uvar? x))
+            (difference live-set `(,x))
+            live-set))
+    
+    (define (add-conflict x live-set)
+        (if (null? live-set)
+            `()
+            (begin 
+                (let ([y (car live-set)])
+                    (cond
+                        [(and (uvar? x)(register? y))
+                            (let ([entry (assq x cg)])
+                                (set-cdr! entry (set-cons y (cdr entry))))]
+                        [(and (uvar? y)(register? x))
+                            (let ([entry (assq y cg)])
+                                (set-cdr! entry (set-cons x (cdr entry))))]
+                        [(and (uvar? y)(uvar? x))
+                            (let ([entry-x (assq x cg)]
+                                  [entry-y (assq y cg)])
+                                (set-cdr! entry-x (set-cons y (cdr entry-x)))
+                                (set-cdr! entry-y (set-cons x (cdr entry-y))))]
+                        [else `()]))
+                (add-conflict x (cdr live-set)))))
+
+    ; only leave registers
+    (define (filter ls)
+        (if (null? ls)
+            `()
+            (try-to-add (car ls) (filter (cdr ls)))))
+    
+    ; (effetc* live-set) -> (ls)
+    (define (uncover-effect* effect* live-set)
+        (if (null? effect*)
+            live-set
+            (let ([ls (uncover-effect* (cdr effect*) live-set)])
+                (uncover-effect (car effect*) ls))))
+
+    ; (tail) -> (ls)
+    (define (uncover-tail tail)
+        (match tail
+            [(if ,pr ,[uncover-tail -> ls_tl1] ,[uncover-tail -> ls_tl2])
+                (uncover-pred pr (union ls_tl1 ls_tl2))]
+            [(begin ,ef* ... ,[uncover-tail -> ls_tl])
+                (uncover-effect* ef* ls_tl)]
+            [(,tr ,loc* ...)
+                (try-to-add tr (filter loc*))]))
+
+    ; (pred live-set) -> (ls)
+    (define (uncover-pred pred live-set)
+        (match pred
+            [(true) live-set]
+            [(false) live-set]
+            [(if ,pr1 ,pr2 ,pr3)
+                (let ([ls_pr2 (uncover-pred pr2 live-set)]
+                      [ls_pr3 (uncover-pred pr3 live-set)])
+                    (uncover-pred pr1 (union ls_pr2 ls_pr3)))]
+            [(begin ,ef* ... ,pr)
+                (let ([ls_pr (uncover-pred pr live-set)])
+                    (uncover-effect* ef* ls_pr))]
+            [(,relop ,tr1 ,tr2)
+                (try-to-add tr1 (try-to-add tr2 live-set))]))
+    
+    ; (effect live-set) -> (ls)
+    (define (uncover-effect effect live-set)
+        (match effect
+            [(nop) live-set]
+            [(begin ,ef1* ... ,ef2)
+                (let ([ls_ef2 (uncover-effect ef2 live-set)])
+                    (uncover-effect* ef1* ls_ef2))]
+            [(if ,pr ,ef1 ,ef2)
+                (let ([ls_ef1 (uncover-effect ef1 live-set)]
+                      [ls_ef2 (uncover-effect ef2 live-set)])
+                    (uncover-pred pr (union ls_ef1 ls_ef2)))]
+            [(set! ,v (,binop ,tr1 ,tr2))
+                (let ([ls (try-to-delete v live-set)])
+                    (begin
+                        (if (or (register? v) (uvar? v)) (add-conflict v ls) `())
+                        (try-to-add tr1 (try-to-add tr2 ls))))]
+            [(set! ,v ,tr)
+                (let ([ls (try-to-delete v live-set)])
+                    (begin
+                        (if (or (register? v) (uvar? v)) (add-conflict v (difference ls `(,tr))) `())
+                        (try-to-add tr ls)))]))
+    
+    (uncover-program program))
+
+;   assign-registers
+;   based on the conflict-graph, assign uvars to registers
+
+(define (assign-registers program)
+    (define (remove-node-helper conflict-graph node ctr-list)
+        (if (null? ctr-list)
+            conflict-graph
+            (if (register? (car ctr-list))
+                (remove-node-helper conflict-graph node (cdr ctr-list))
+                (let* ([entry (assq (car ctr-list) conflict-graph)]
+                       [cg (cons (difference entry `(,node)) (remq entry conflict-graph))])
+                    (remove-node-helper cg node (cdr ctr-list))))))
+
+    (define (remove-node conflict-graph node)
+        (let* ([entry (assq node conflict-graph)])
+            (remove-node-helper (remq entry conflict-graph) node (cdr entry))))
+    
+    (define (find-low-degree conflict-graph) 
+        (if (null? conflict-graph)
+            (values 0 `invalid)
+            (let-values ([(deg node) (find-low-degree (cdr conflict-graph))])
+                (let ([cur-deg (- (length (car conflict-graph)) 1)])
+                    (if (>= cur-deg deg)
+                        (values cur-deg (caar conflict-graph))
+                        (values deg node))))))
+
+    (define (find-ban-list ctr-list assignment)
+        (if (null? ctr-list)
+            `()
+            (let ([ls (find-ban-list (cdr ctr-list) assignment)]
+                  [x (car ctr-list)])
+                (cond
+                    [(register? x) (set-cons x ls)]
+                    [(uvar? x) (set-cons (cadr (assq x assignment)) ls)]))))
+
+    ; (conflict-graph) -> (as) : ([uv1, loc1] [uv2 loc2] ...)
+    (define (assign conflict-graph) 
+        (if (null? conflict-graph)
+            `()
+            (let-values ([(deg node) (find-low-degree conflict-graph)])
+                (let* ([entry (assq node conflict-graph)]
+                       [cg (remove-node conflict-graph node)]
+                       [as (assign cg)]
+                       [ban-reg-ls (find-ban-list (cdr entry) as)]
+                       [loc (car (difference registers ban-reg-ls))])
+                    (cons (list node loc) as)))))
+
+    (define (assign-program program)
+        (match program
+            [(letrec ([,lb* (lambda () ,[assign-body -> bd1*])] ...) ,[assign-body -> bd2])
+                `(letrec ([,lb* (lambda () ,bd1*)] ...) ,bd2)]))
+
+    (define (assign-body body)
+        (match body
+            [(locals (,uv* ...) (register-conflict ,cg ,tl))
+                `(locate ,(assign cg) ,tl)]))
+
+    (assign-program program))
+
+;   discard-call-live
+;   in tail: (triv loc*) -> (triv)
+
+(define (discard-call-live program)
+    (define (discard-program program)
+        (match program
+            [(letrec ([,lb* (lambda () ,[discard-body -> bd1*])] ...) ,[discard-body -> bd2])
+                `(letrec ([,lb* (lambda () ,bd1*)] ...) ,bd2)]))
+
+    (define (discard-body body)
+        (match body
+            [(locate ([,uv* ,reg*] ...) ,[discard-tail -> tl])
+                `(locate ([,uv* ,reg*] ...) ,tl)]))   
+
+    (define (discard-tail tail)
+        (match tail
+            [(begin ,ef* ... ,[discard-tail -> tl])
+                `(begin ,ef* ... ,tl)]
+	        [(if ,pr ,[discard-tail -> tl1] ,[discard-tail -> tl2])
+	             `(if ,pr ,tl1 ,tl2)]
+	        [(,tr ,loc* ...)  `(,tr)]))    
+    
+    (discard-program program))
 
 ;   finalize-locations
 ;   discard location, r.8 -> rax
