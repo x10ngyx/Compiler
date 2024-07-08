@@ -9,6 +9,227 @@
 
 (define (verify-scheme x) x) 
 
+;   remove-complect-opera*
+;   using set!, make all occurrences of value -> triv
+
+(define (remove-complex-opera* program)
+    (define (remove-program program)
+        (match program
+            [(letrec ([,lb* (lambda ,uv** ,[remove-body -> bd1*])] ...) ,[remove-body -> bd2])
+                `(letrec ([,lb* (lambda ,uv** ,bd1*)] ...) ,bd2)]))
+
+    (define (remove-body body)
+        (match body
+            [(locals ,uv* ,[remove-tail -> tl new-uv*])
+                `(locals ,(append uv* new-uv*) ,tl)]))
+    
+    (define (remove-tail tail)
+        (match tail
+            [(if ,[remove-pred -> pr uv*_pr] ,[remove-tail -> tl1 uv*_tl1] ,[remove-tail -> tl2 uv*_tl2])
+                (values `(if ,pr ,tl1 ,tl2) (append uv*_pr uv*_tl1 uv*_tl2))]
+            [(begin ,[remove-effect -> ef* uv*_ef*] ... ,[remove-tail -> tl uv*_tl])
+                (values (make-begin `(,ef* ... ,tl)) (apply append uv*_tl uv*_ef*))]
+            [(,binop ,val1 ,val2) (guard (memq binop `(+ - * logand logor sra)))
+                (remove-helper binop val1 val2)]
+            [(,val1 ,val2* ...)
+                (let-values ([(set* call uv*) (remove-helper2 (cons val1 val2*))])
+                    (values (make-begin `(,set* ... ,call)) uv*))]
+            [,tr (values tr `())]))
+    
+    (define (remove-pred pred)
+        (match pred
+            [(true) (values `(true) `())]
+            [(false) (values `(false) `())]
+            [(if ,[remove-pred -> pr1 uv*_pr1] ,[remove-pred -> pr2 uv*_pr2] ,[remove-pred -> pr3 uv*_pr3])
+                (values `(if ,pr1 ,pr2 ,pr3) (append uv*_pr1 uv*_pr2 uv*_pr3))]
+            [(begin ,[remove-effect -> ef* uv*_ef*] ... ,[remove-pred -> pr uv*_pr])
+                (values (make-begin `(,ef* ... ,pr)) (apply append uv*_pr uv*_ef*))]
+            [(,relop ,val1 ,val2)
+                (remove-helper relop val1 val2)]))
+    
+    (define (remove-effect effect)
+        (match effect
+            [(nop) (values `(nop) `())]
+            [(begin ,[remove-effect -> ef1* uv*_ef1*] ... ,[remove-effect -> ef2 uv*_ef2])
+                (values (make-begin `(,ef1* ... ,ef2)) (apply append uv*_ef2 uv*_ef1*))]
+            [(if ,[remove-pred -> pr uv*_pr] ,[remove-effect -> ef1 uv*_ef1] ,[remove-effect -> ef2 uv*_ef2])
+                (values `(if ,pr ,ef1 ,ef2) (append uv*_pr uv*_ef1 uv*_ef2))]
+            [(set! ,uv ,[remove-value -> val uv*_val])
+                (values `(set! ,uv ,val) uv*_val)]))
+    
+    (define (remove-value value)
+        (match value
+            [(if ,[remove-pred -> pr uv*_pr] ,[remove-value -> val1 uv*_val1] ,[remove-value -> val2 uv*_val2])
+                (values `(if ,pr ,val1 ,val2) (append uv*_pr uv*_val1 uv*_val2))]
+            [(begin ,[remove-effect -> ef* uv*_ef*] ... ,[remove-value -> val uv*_val])
+                (values (make-begin `(,ef* ... ,val)) (apply append uv*_val uv*_ef*))]
+            [(,binop ,val1 ,val2)
+                (remove-helper binop val1 val2)]
+            [,tr (values tr `())]))
+    
+    (define (remove-helper op val1 val2)
+        (cond
+            [(and (not (list? val1)) (not (list? val2)))
+                (values `(,op ,val1 ,val2) `())]
+            [(and (not (list? val1)) (list? val2))
+                (let-values ([(new-val2 uv*_val2) (remove-value val2)])
+                    (let ([uv2 (unique-name 'r)])
+                        (values `(begin (set! ,uv2 ,new-val2)
+                                        (,op ,val1 ,uv2))
+                                (cons uv2 uv*_val2))))]
+            [(and (list? val1) (not (list? val2)))
+                (let-values ([(new-val1 uv*_val1) (remove-value val1)])
+                    (let ([uv1 (unique-name 'r)])
+                        (values `(begin (set! ,uv1 ,new-val1)
+                                        (,op ,uv1 ,val2))
+                                (cons uv1 uv*_val1))))]
+            [(and (list? val1) (list? val2))
+                (let-values ([(new-val1 uv*_val1) (remove-value val1)]
+                             [(new-val2 uv*_val2) (remove-value val2)])
+                    (let ([uv1 (unique-name 'r)]
+                          [uv2 (unique-name 'r)])
+                        (values `(begin (set! ,uv1 ,new-val1)
+                                        (set! ,uv2 ,new-val2)
+                                        (,op ,uv1 ,uv2))
+                                (append (list uv1 uv2) uv*_val1 uv*_val2))))]))
+
+    (define (remove-helper2 value*)
+        (if (null? value*)
+            (values `() `() `())
+            (let-values ([(set* call uv*) (remove-helper2 (cdr value*))])
+                (let ([val (car value*)])
+                    (if (list? val)
+                        (let-values ([(new-val uv*_val) (remove-value val)])
+                            (let ([uv (unique-name 'r)])
+                                (values (cons `(set! ,uv ,new-val) set*)
+                                        (cons uv call)
+                                        (cons uv uv*))))
+                        (values set* (cons val call) uv*))))))
+
+    (remove-program program))
+
+;   flatten-set!
+;   (set! uvar value) -> (set! uvar triv) / (set! uvar (binop triv1 triv2))
+
+(define (flatten-set! program)
+    (define (flat-program program)
+        (match program
+            [(letrec ([,lb* (lambda ,uv** ,[flat-body -> bd1*])] ...) ,[flat-body -> bd2])
+                `(letrec ([,lb* (lambda ,uv** ,bd1*)] ...) ,bd2)]))
+
+    (define (flat-body body)
+        (match body
+            [(locals ,uv* ,[flat-tail -> tl])
+                `(locals ,uv* ,tl)]))
+    
+    (define (flat-tail tail)
+        (match tail
+            [(if ,[flat-pred -> pr] ,[flat-tail -> tl1] ,[flat-tail -> tl2])
+                `(if ,pr ,tl1 ,tl2)]
+            [(begin ,[flat-effect -> ef*] ... ,[flat-tail -> tl])
+                (make-begin `(,ef* ... ,tl))]
+            [(,binop ,tr1 ,tr2) (guard (memq binop `(+ - * logand logor sra))) tail]
+            [(,tr1 ,tr2* ...) tail]
+            [,tr tail]))
+    
+    (define (flat-pred pred)
+        (match pred
+            [(true) pred]
+            [(false) pred]
+            [(if ,[flat-pred -> pr1] ,[flat-pred -> pr2] ,[flat-pred -> pr3])
+                `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[flat-effect -> ef*] ... ,[flat-pred -> pr])
+                (make-begin `(,ef* ... ,pr))]
+            [(,relop ,tr1 ,tr2) pred]))
+    
+    (define (flat-effect effect)
+        (match effect
+            [(nop) effect]
+            [(begin ,[flat-effect -> ef1*] ... ,[flat-effect -> ef2])
+                (make-begin `(,ef1* ... ,ef2))]
+            [(if ,[flat-pred -> pr] ,[flat-effect -> ef1] ,[flat-effect -> ef2])
+                `(if ,pr ,ef1 ,ef2)]
+            [(set! ,uv ,val) (flat-value val uv)]))
+    
+    (define (flat-value value uvar)
+        (match value
+            [(if ,[flat-pred -> pr] ,val1 ,val2)
+                `(if ,pr ,(flat-value val1 uvar) ,(flat-value val2 uvar))]
+            [(begin ,[flat-effect -> ef*] ... ,val)
+                (make-begin `(,ef* ... ,(flat-value val uvar)))]
+            [(,binop ,tr1 ,tr2) `(set! ,uvar (,binop ,tr1 ,tr2))]
+            [,tr `(set! ,uvar ,tr)]))
+
+    (flat-program program))
+
+;   impose-calling-conventions
+;   add set!* for caller and callee
+
+(define (impose-calling-conventions program)
+    (define (impose-program program)
+        (match program
+            [(letrec ([,lb* (lambda ,uv** ,bd1*)] ...) ,bd2)
+                (let* ([new-bd1* (map impose-body bd1* uv**)]
+                       [new-bd2 (impose-body bd2 `())])
+                    `(letrec ([,lb* (lambda () ,new-bd1*)] ...) ,new-bd2))]))
+
+    (define (impose-body body parameter*)
+        (match body
+            [(locals ,uv* ,tl)
+                (let* ([uv-rp (unique-name `rp)]
+                       [loc* (para->loc parameter* parameter-registers 0)]
+                       [set* `((set! ,parameter* ,loc*) ...)]
+                       [new-tl (make-begin `((set! ,uv-rp ,return-address-register)
+                                             ,set* ...
+                                             ,(impose-tail tl uv-rp)))])
+                    `(locals (,uv* ... ,uv-rp ,parameter* ...) ,new-tl))]))
+    
+    (define (impose-tail tail uv-rp)
+        (match tail
+            [(if ,pr ,tl1 ,tl2)
+                `(if ,pr ,(impose-tail tl1 uv-rp) ,(impose-tail tl2 uv-rp))]
+            [(begin ,ef* ... ,tl)
+                (make-begin `(,ef* ... ,(impose-tail tl uv-rp)))]
+            [(,binop ,tr1 ,tr2) (guard (memq binop `(+ - * logand logor sra)))
+                (make-begin `((set! ,return-value-register (,binop ,tr1 ,tr2))
+                              (,uv-rp ,frame-pointer-register ,return-value-register)))]
+            [(,tr1 ,tr2* ...) 
+                (let* ([loc* (para->loc tr2* parameter-registers 0)]
+                       [set* `((set! ,loc* ,tr2*) ...)]
+                       [new-set* (fv-first set*)]
+                       [new-tl (make-begin `(,new-set* ...
+                                             (set! ,return-address-register ,uv-rp)
+                                             (,tr1 ,frame-pointer-register ,return-address-register ,loc* ...)))])
+                    new-tl)]
+            [,tr 
+                (make-begin `((set! ,return-value-register ,tr)
+                              (,uv-rp ,frame-pointer-register ,return-value-register)))]))
+    
+    (define (para->loc para* reg* cnt)
+        (if (null? para*)
+            `()
+            (if (null? reg*)
+                (cons (index->frame-var cnt) (para->loc (cdr para*) reg* (+ 1 cnt)))
+                (cons (car reg*) (para->loc (cdr para*) (cdr reg*) cnt)))))
+    
+    (define (fv-first set*)
+        (let* ([n (length parameter-registers)]
+               [ls1 (get1 set* 0 n)]
+               [ls2 (get2 set* 0 n)])
+            (append ls2 ls1)))
+    
+    (define (get1 ls cur tot)
+        (if (or (null? ls) (= cur tot))
+            `()
+            (cons (car ls) (get1 (cdr ls) (+ 1 cur) tot))))
+    (define (get2 ls cur tot)
+        (if (or (null? ls) (= cur tot))
+            ls
+            (get2 (cdr ls) (+ 1 cur) tot)))
+    
+        
+    (impose-program program))
+
 ;   uncover-frame-conflict
 ;   add frame-conflict-graph for each body
 
@@ -699,12 +920,12 @@
 (define (expose-frame-var program)
     (define (expose-loc loc)
         (if (frame-var? loc)
-            (make-disp-opnd `rbp (* 8 (frame-var->index loc)))
+            (make-disp-opnd frame-pointer-register (* (ash 1 align-shift) (frame-var->index loc)))
             loc))
 
     (define (expose-triv triv)
         (if (frame-var? triv)
-            (make-disp-opnd `rbp (* 8 (frame-var->index triv)))
+            (make-disp-opnd frame-pointer-register (* (ash 1 align-shift) (frame-var->index triv)))
             triv))
 
     (define (expose-effect effect)
