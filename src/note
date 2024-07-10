@@ -1,8 +1,209 @@
+(remove-complex-opera*
+`(letrec ([f$0 (lambda (h.1 v.2) (locals () (* h.1 v.2)))]
+             [k$1 (lambda (x.1) (locals () (+ x.1 5)))]
+             [g$2 (lambda (x.1) (locals () (+ 1 x.1)))])
+      (locals (x.4 g.1)
+        (begin
+          (set! x.4 15)
+          (k$1 (g$2 (begin (set! g.1 3) (f$0 g.1 x.4)))))))
+)
+
+
+
+
+
+(assign-new-frame
+(pre-assign-frame
+(uncover-frame-conflict
+(impose-calling-conventions
+(flatten-set!
+(remove-complex-opera*
+`(letrec ([f$1 (lambda (n.2 a.3 b.4 c.5 x.6)
+                    (locals ()
+                      (if (= n.2 0)
+                          (+ (* a.3 (* x.6 x.6)) (+ (* b.4 x.6) c.5))
+                          (+ (f$1 (sra n.2 3) (+ a.3 (logand n.2 4))
+                                  (+ b.4 (logand n.2 2))
+                                  (+ c.5 (logand n.2 1)) x.6)
+                             1))))])
+      (locals () (f$1 16434824 1 0 -1 7)))
+)
+)
+)
+)
+)
+)
+
+(assign-new-frame
+`(letrec ([f$1 (lambda ()
+                (locals (rco.49 rco.48 rco.46 rco.47 rco.45 rco.44 rco.43 rco.42 rco.41 rco.40 rco.39 rco.38 n.2 a.3 b.4 c.5 x.6 uv-nfv.52 uv-nfv.53 uv-nfv.54)
+                  (new-frames ((uv-nfv.52 uv-nfv.53 uv-nfv.54))
+                    (locate ([uv-rp.50 fv3])
+                      (frame-conflict ([rco.49 rco.48 rco.47 uv-rp.50 c.5
+                                        x.6 b.4]
+                                       [rco.48 uv-rp.50 rco.49]
+                                       [rco.46 uv-rp.50 c.5 x.6 b.4 a.3]
+                                       [rco.47 uv-rp.50 rco.49 c.5]
+                                       [rco.45 uv-rp.50]
+                                       [rco.44 uv-nfv.54 uv-nfv.53
+                                        uv-nfv.52 rco.39 rco.38 rco.41
+                                        rco.40 rco.43 rco.42 uv-rp.50 x.6
+                                        c.5 n.2 b.4 a.3]
+                                       [rco.43 uv-nfv.54 uv-nfv.53
+                                        uv-nfv.52 rco.39 rco.38 rco.41
+                                        rco.40 uv-rp.50 rco.44 x.6 c.5 n.2
+                                        b.4]
+                                       [rco.42 uv-rp.50 rco.44 x.6 c.5 n.2
+                                        b.4 a.3]
+                                       [rco.41 rco.39 rco.38 uv-rp.50
+                                        rco.43 rco.44 x.6 c.5 n.2]
+                                       [rco.40 uv-rp.50 rco.43 rco.44 x.6
+                                        c.5 n.2 b.4]
+                                       [rco.39 uv-nfv.52 uv-rp.50 rco.43
+                                        rco.44 x.6 rco.41]
+                                       [rco.38 uv-rp.50 rco.43 rco.44 x.6
+                                        rco.41 c.5]
+                                       [uv-rp.50 rco.45 rco.39 rco.38
+                                        rco.41 rco.40 rco.43 rco.42 rco.44
+                                        rco.48 rco.47 rco.49 rco.46 x.6 c.5
+                                        b.4 a.3 n.2 fv2 fv1 fv0]
+                                       [n.2 rco.41 rco.40 rco.43 rco.42
+                                        rco.44 x.6 c.5 b.4 a.3 uv-rp.50 fv2
+                                        fv1 fv0]
+                                       [a.3 rco.42 rco.44 rco.46 x.6 c.5
+                                        b.4 uv-rp.50 n.2 fv2 fv1 fv0]
+                                       [b.4 rco.40 rco.43 rco.42 rco.44
+                                        rco.49 rco.46 x.6 c.5 uv-rp.50 n.2
+                                        a.3 fv2 fv1]
+                                       [c.5 rco.38 rco.41 rco.40 rco.43
+                                        rco.42 rco.44 rco.47 rco.49 rco.46
+                                        x.6 uv-rp.50 n.2 b.4 a.3 fv2]
+                                       [x.6 uv-nfv.53 uv-nfv.52 rco.39
+                                        rco.38 rco.41 rco.40 rco.43 rco.42
+                                        rco.44 rco.49 rco.46 uv-rp.50 c.5
+                                        n.2 b.4 a.3]
+                                       [uv-nfv.52 uv-nfv.54 uv-nfv.53
+                                        rco.43 rco.44 x.6 rco.39]
+                                       [uv-nfv.53 uv-nfv.54 uv-nfv.52
+                                        rco.43 rco.44 x.6]
+                                       [uv-nfv.54 uv-nfv.53 uv-nfv.52
+                                        rco.43 rco.44])
+                        (call-live (uv-rp.50)
+                          (begin
+                            (set! uv-rp.50 r15)
+                            (set! n.2 r8)
+                            (set! a.3 r9)
+                            (set! b.4 fv0)
+                            (set! c.5 fv1)
+                            (set! x.6 fv2)
+                            (if (= n.2 0)
+                                (begin
+                                  (set! rco.46 (* x.6 x.6))
+                                  (set! rco.49 (* a.3 rco.46))
+                                  (set! rco.47 (* b.4 x.6))
+                                  (set! rco.48 (+ rco.47 c.5))
+                                  (set! rax (+ rco.49 rco.48))
+                                  (uv-rp.50 rbp rax))
+                                (begin
+                                  (set! rco.44 (sra n.2 3))
+                                  (set! rco.42 (logand n.2 4))
+                                  (set! rco.43 (+ a.3 rco.42))
+                                  (set! rco.40 (logand n.2 2))
+                                  (set! rco.41 (+ b.4 rco.40))
+                                  (set! rco.38 (logand n.2 1))
+                                  (set! rco.39 (+ c.5 rco.38))
+                                  (return-point return-label$51
+                                    (begin
+                                      (set! uv-nfv.52 rco.41)
+                                      (set! uv-nfv.53 rco.39)
+                                      (set! uv-nfv.54 x.6)
+                                      (set! r8 rco.44)
+                                      (set! r9 rco.43)
+                                      (set! r15 return-label$51)
+                                      (f$1 rbp r15 r8 r9 uv-nfv.52
+                                           uv-nfv.53 uv-nfv.54)))
+                                  (set! rco.45 rax)
+                                  (set! rax (+ rco.45 1))
+                                  (uv-rp.50 rbp rax))))))))))])
+  (locals (uv-rp.55)
+    (new-frames ()
+      (locate ()
+        (frame-conflict ([uv-rp.55 fv2 fv1 fv0])
+          (call-live ()
+            (begin
+              (set! uv-rp.55 r15)
+              (set! fv0 0)
+              (set! fv1 -1)
+              (set! fv2 7)
+              (set! r8 16434824)
+              (set! r9 1)
+              (set! r15 uv-rp.55)
+              (f$1 rbp r15 r8 r9 fv0 fv1 fv2))))))))
+)
+
+
+
+
+(non-tail-call
+`f$0
+`(g.1 x.4)
+)
+
 (impose-calling-conventions
 `
-    (letrec () (locals () 7))
+    (letrec ([f$0 (lambda (h.1 v.2) (locals () (* h.1 v.2)))]
+         [k$1 (lambda (x.1) (locals () (+ x.1 5)))]
+         [g$2 (lambda (x.1) (locals () (+ 1 x.1)))])
+  (locals (x.4 g.1 r.6 r.5)
+    (begin
+      (set! x.4 15)
+      (set! g.1 3)
+      (set! r.5 (f$0 g.1 x.4))
+      (set! r.6 (g$2 r.5))
+      (k$1 r.6))))
 
 )
+
+(letrec ([f$0 (lambda ()
+                (locals (rp.8 h.1 v.2)
+                  (new-frames ()
+                    (begin
+                      (set! rp.8 r15)
+                      (set! h.1 r8)
+                      (set! v.2 r9)
+                      (set! rax (* h.1 v.2))
+                      (rp.8 rbp rax)))))]
+         [k$1 (lambda ()
+                (locals (rp.9 x.1)
+                  (new-frames ()
+                    (begin
+                      (set! rp.9 r15)
+                      (set! x.1 r8)
+                      (set! rax (+ x.1 5))
+                      (rp.9 rbp rax)))))]
+         [g$2 (lambda ()
+                (locals (rp.7 x.1)
+                  (new-frames ()
+                    (begin
+                      (set! rp.7 r15)
+                      (set! x.1 r8)
+                      (set! rax (+ 1 x.1))
+                      (rp.7 rbp rax)))))])
+  (locals (x.4 g.1 r.6 r.5 rp.10)
+    (new-frames ()
+      (begin
+        (set! rp.10 r15)
+        (set! x.4 15)
+        (set! g.1 3)
+        (set! r.5 (f$0 g.1 x.4))
+        (set! r.6 (g$2 r.5))
+        (set! r8 r.6)
+        (set! r15 rp.10)
+        (k$1 rbp r15 r8)))))
+
+
+
+    
 
 
 (if (begin
