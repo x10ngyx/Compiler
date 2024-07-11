@@ -4,10 +4,10 @@
         ((pair? obj) (cons (deep-copy (car obj)) (deep-copy (cdr obj))))
         (else obj)))
 
-;   verify-scheme
+;   verify-uil
 ;   do nothing
 
-(define (verify-scheme x) x) 
+(define (verify-uil x) x) 
 
 ;   remove-complect-opera*
 ;   using set!, make all occurrences of value -> triv
@@ -30,9 +30,16 @@
             [(begin ,[remove-effect -> ef* uv*-ef*] ... ,[remove-tail -> tl uv*-tl])
                 (values (make-begin `(,ef* ... ,tl)) (apply append uv*-tl uv*-ef*))]
             [(,binop ,val1 ,val2) (guard (memq binop `(+ - * logand logor sra)))
-                (remove-helper binop val1 val2)]
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2))])
+                    (values (make-begin `(,set* ... (,binop ,tr* ...))) uv*))]
+            [(alloc ,val)
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val))])
+                    (values (make-begin `(,set* ... (alloc ,tr* ...))) uv*))]
+            [(mref ,val1 ,val2)
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2))])
+                    (values (make-begin `(,set* ... (mref ,tr* ...))) uv*))]
             [(,val1 ,val2* ...)
-                (let-values ([(set* call uv*) (remove-helper2 (cons val1 val2*))])
+                (let-values ([(set* call uv*) (muti-remove-helper (cons val1 val2*))])
                     (values (make-begin `(,set* ... ,call)) uv*))]
             [,tr (values tr `())]))
     
@@ -45,7 +52,8 @@
             [(begin ,[remove-effect -> ef* uv*-ef*] ... ,[remove-pred -> pr uv*-pr])
                 (values (make-begin `(,ef* ... ,pr)) (apply append uv*-pr uv*-ef*))]
             [(,relop ,val1 ,val2)
-                (remove-helper relop val1 val2)]))
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2))])
+                    (values (make-begin `(,set* ... (,relop ,tr* ...))) uv*))]))
     
     (define (remove-effect effect)
         (match effect
@@ -56,8 +64,11 @@
                 (values `(if ,pr ,ef1 ,ef2) (append uv*-pr uv*-ef1 uv*-ef2))]
             [(set! ,uv ,[remove-value -> val uv*-val])
                 (values `(set! ,uv ,val) uv*-val)]
+            [(mset! ,val1 ,val2 ,val3)
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2 val3))])
+                    (values (make-begin `(,set* ... (mset! ,tr* ...))) uv*))]
             [(,val1 ,val2* ...)
-                (let-values ([(set* call uv*) (remove-helper2 (cons val1 val2*))])
+                (let-values ([(set* call uv*) (muti-remove-helper (cons val1 val2*))])
                     (values (make-begin `(,set* ... ,call)) uv*))]))
     
     (define (remove-value value)
@@ -67,42 +78,23 @@
             [(begin ,[remove-effect -> ef* uv*-ef*] ... ,[remove-value -> val uv*-val])
                 (values (make-begin `(,ef* ... ,val)) (apply append uv*-val uv*-ef*))]
             [(,binop ,val1 ,val2) (guard (memq binop `(+ - * logand logor sra)))
-                (remove-helper binop val1 val2)]
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2))])
+                    (values (make-begin `(,set* ... (,binop ,tr* ...))) uv*))]
+            [(alloc ,val)
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val))])
+                    (values (make-begin `(,set* ... (alloc ,tr* ...))) uv*))]
+            [(mref ,val1 ,val2)
+                (let-values ([(set* tr* uv*) (muti-remove-helper (list val1 val2))])
+                    (values (make-begin `(,set* ... (mref ,tr* ...))) uv*))]
             [(,val1 ,val2* ...)
-                (let-values ([(set* call uv*) (remove-helper2 (cons val1 val2*))])
-                    (values (make-begin `(,set* ... ,call)) uv*))]
+                (let-values ([(set* tr* uv*) (muti-remove-helper (cons val1 val2*))])
+                    (values (make-begin `(,set* ... ,tr*)) uv*))]
             [,tr (values tr `())]))
-    
-    (define (remove-helper op val1 val2)
-        (cond
-            [(and (not (list? val1)) (not (list? val2)))
-                (values `(,op ,val1 ,val2) `())]
-            [(and (not (list? val1)) (list? val2))
-                (let-values ([(new-val2 uv*-val2) (remove-value val2)])
-                    (let ([uv2 (unique-name 'rco)])
-                        (values `(begin (set! ,uv2 ,new-val2)
-                                        (,op ,val1 ,uv2))
-                                (cons uv2 uv*-val2))))]
-            [(and (list? val1) (not (list? val2)))
-                (let-values ([(new-val1 uv*-val1) (remove-value val1)])
-                    (let ([uv1 (unique-name 'rco)])
-                        (values `(begin (set! ,uv1 ,new-val1)
-                                        (,op ,uv1 ,val2))
-                                (cons uv1 uv*-val1))))]
-            [(and (list? val1) (list? val2))
-                (let-values ([(new-val1 uv*-val1) (remove-value val1)]
-                             [(new-val2 uv*-val2) (remove-value val2)])
-                    (let ([uv1 (unique-name 'rco)]
-                          [uv2 (unique-name 'rco)])
-                        (values `(begin (set! ,uv1 ,new-val1)
-                                        (set! ,uv2 ,new-val2)
-                                        (,op ,uv1 ,uv2))
-                                (append (list uv1 uv2) uv*-val1 uv*-val2))))]))
 
-    (define (remove-helper2 value*)
+    (define (muti-remove-helper value*)
         (if (null? value*)
             (values `() `() `())
-            (let-values ([(set* call uv*) (remove-helper2 (cdr value*))])
+            (let-values ([(set* call uv*) (muti-remove-helper (cdr value*))])
                 (let ([val (car value*)])
                     (if (list? val)
                         (let-values ([(new-val uv*-val) (remove-value val)])
@@ -130,11 +122,11 @@
     
     (define (flat-tail tail)
         (match tail
-            [(if ,[flat-pred -> pr] ,[flat-tail -> tl1] ,[flat-tail -> tl2])
-                `(if ,pr ,tl1 ,tl2)]
-            [(begin ,[flat-effect -> ef*] ... ,[flat-tail -> tl])
-                (make-begin `(,ef* ... ,tl))]
+            [(if ,[flat-pred -> pr] ,[flat-tail -> tl1] ,[flat-tail -> tl2]) `(if ,pr ,tl1 ,tl2)]
+            [(begin ,[flat-effect -> ef*] ... ,[flat-tail -> tl]) (make-begin `(,ef* ... ,tl))]
             [(,binop ,tr1 ,tr2) (guard (memq binop `(+ - * logand logor sra))) tail]
+            [(alloc ,tr) tail]
+            [(mref ,tr1 ,tr2) tail]
             [(,tr1 ,tr2* ...) tail]
             [,tr tail]))
     
@@ -156,6 +148,7 @@
             [(if ,[flat-pred -> pr] ,[flat-effect -> ef1] ,[flat-effect -> ef2])
                 `(if ,pr ,ef1 ,ef2)]
             [(set! ,uv ,val) (flat-value val uv)]
+            [(mset! ,tr1 ,tr2 ,tr3) effect]
             [(,tr1 ,tr2* ...) effect]))
     
     (define (flat-value value uvar)
@@ -166,8 +159,9 @@
                 (make-begin `(,ef* ... ,(flat-value val uvar)))]
             [(,binop ,tr1 ,tr2) (guard (memq binop `(+ - * logand logor sra)))
                 `(set! ,uvar (,binop ,tr1 ,tr2))]
-            [(,tr1 ,tr2* ...)
-                `(set! ,uvar (,tr1 ,tr2* ...))]
+            [(alloc ,tr) `(set! ,uvar (alloc ,tr))]
+            [(mref ,tr1 ,tr2) `(set! ,uvar (mref ,tr1 ,tr2))]
+            [(,tr1 ,tr2* ...) `(set! ,uvar (,tr1 ,tr2* ...))]  
             [,tr `(set! ,uvar ,tr)]))
 
     (flat-program program))
@@ -209,27 +203,31 @@
                 (make-begin `(,ef* ... ,(impose-tail tl uv-rp)))]
             [(,binop ,tr1 ,tr2) (guard (memq binop `(+ - * logand logor sra)))
                 (make-begin `((set! ,return-value-register (,binop ,tr1 ,tr2))
-                              (,uv-rp ,frame-pointer-register ,return-value-register)))]
+                              (,uv-rp ,allocation-pointer-register ,frame-pointer-register ,return-value-register)))]
+            [(alloc ,tr)
+                (make-begin `((set! ,return-value-register (alloc ,tr))
+                              (,uv-rp ,allocation-pointer-register ,frame-pointer-register ,return-value-register)))]
+            [(mref ,tr1 ,tr2) 
+                (make-begin `((set! ,return-value-register (mref ,tr1 ,tr2))
+                              (,uv-rp ,allocation-pointer-register ,frame-pointer-register ,return-value-register)))]
             [(,tr1 ,tr2* ...) 
                 (let* ([loc* (para->loc tr2* parameter-registers 0)]
                        [set* `((set! ,loc* ,tr2*) ...)]
                        [new-set* (fv-first set*)]
                        [new-tl (make-begin `(,new-set* ...
                                              (set! ,return-address-register ,uv-rp)
-                                             (,tr1 ,frame-pointer-register ,return-address-register ,loc* ...)))])
+                                             (,tr1 ,allocation-pointer-register ,frame-pointer-register ,return-address-register ,loc* ...)))])
                     new-tl)]
             [,tr 
                 (make-begin `((set! ,return-value-register ,tr)
-                              (,uv-rp ,frame-pointer-register ,return-value-register)))]))
+                              (,uv-rp ,allocation-pointer-register ,frame-pointer-register ,return-value-register)))]))
     
     (define (impose-pred pred)
         (match pred
             [(true) pred]
             [(false) pred]
-            [(if ,[impose-pred -> pr1] ,[impose-pred -> pr2] ,[impose-pred -> pr3])
-                `(if ,pr1 ,pr2 ,pr3)]
-            [(begin ,[impose-effect -> ef*] ... ,[impose-pred -> pr])
-                (make-begin `(,ef* ... ,pr))]
+            [(if ,[impose-pred -> pr1] ,[impose-pred -> pr2] ,[impose-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[impose-effect -> ef*] ... ,[impose-pred -> pr]) (make-begin `(,ef* ... ,pr))]
             [(,relop ,tr1 ,tr2) pred]))
     
     (define (impose-effect effect)
@@ -239,11 +237,13 @@
                 (make-begin `(,ef1* ... ,ef2))]
             [(if ,[impose-pred -> pr] ,[impose-effect -> ef1] ,[impose-effect -> ef2])
                 `(if ,pr ,ef1 ,ef2)]
-            [(set! ,uv (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra)))
-                effect]
+            [(set! ,uv (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra))) effect]
+            [(set! ,uv (alloc ,tr)) effect]
+            [(set! ,uv (mref ,tr1 ,tr2)) effect]
             [(set! ,uv (,tr1 ,tr2* ...))
                 (make-begin (list (non-tail-call tr1 tr2*) `(set! ,uv ,return-value-register)))]
             [(set! ,uv ,tr) effect]
+            [(mset! ,tr1 ,tr2 ,tr3) effect]
             [(,tr1 ,tr2* ...) (non-tail-call tr1 tr2*)]))
 
     (define (non-tail-call func para*) (match func [,x ; in order to use ...
@@ -254,7 +254,7 @@
                [new-set* (fv-first set*)]
                [call (make-begin `(,new-set* ...
                                    (set! ,return-address-register ,rp-label)
-                                   (,func ,frame-pointer-register ,return-address-register ,loc* ...)))])
+                                   (,func ,allocation-pointer-register ,frame-pointer-register ,return-address-register ,loc* ...)))])
             (set! nfv** (cons (deep-copy nfv*) nfv**))
             `(return-point ,rp-label ,call))]))
 
@@ -287,6 +287,53 @@
             (get2 (cdr ls) (+ 1 cur) tot)))
     
     (impose-program program))
+
+;   expose-allocation-pointer
+;   discard alloc
+
+(define (expose-allocation-pointer program)
+    (define (expose-program program)
+        (match program
+            [(letrec ([,lb* (lambda () ,[expose-body -> bd1*])] ...) ,[expose-body -> bd2])
+                `(letrec ([,lb* (lambda () ,bd1*)] ...) ,bd2)]))
+    
+    (define (expose-body body)
+        (match body
+            [(locals ,local* (new-frames ,nfv** ,[expose-tail -> tl]))
+                `(locals ,local* (new-frames ,nfv** ,tl))]))
+
+    (define (expose-tail tail)
+        (match tail
+            [(if ,[expose-pred -> pr] ,[expose-tail -> tl1] ,[expose-tail -> tl2])
+                `(if ,pr ,tl1 ,tl2)]
+            [(begin ,[expose-effect -> ef*] ... ,[expose-tail -> tl])
+                (make-begin `(,ef* ... ,tl))]
+            [(,tr ,loc* ...) tail]))
+
+    (define (expose-pred pred)
+        (match pred
+            [(true) pred]
+            [(false) pred]
+            [(if ,[expose-pred -> pr1] ,[expose-pred -> pr2] ,[expose-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[expose-effect -> ef*] ... ,[expose-pred -> pr]) (make-begin `(,ef* ... ,pr))]
+            [(,relop ,tr1 ,tr2) pred]))
+                
+    (define (expose-effect effect)
+        (match effect
+            [(nop) effect]
+            [(begin ,[expose-effect -> ef1*] ... ,[expose-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
+            [(if ,[expose-pred -> pr] ,[expose-effect -> ef1] ,[expose-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
+            [(set! ,uv (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra))) effect]
+            [(set! ,uv (alloc ,tr))
+                (make-begin `((set! ,uv ,allocation-pointer-register)
+                              (set! ,allocation-pointer-register (+ ,allocation-pointer-register ,tr))))]
+            [(set! ,uv (mref ,tr1 ,tr2)) effect]
+            [(set! ,uv ,tr) effect]
+            [(mset! ,tr1 ,tr2 ,tr3) effect]
+            [(return-point ,lb ,[expose-tail -> tl]) `(return-point ,lb ,tl)]
+            [(,tr1 ,tr2* ...) effect]))
+
+    (expose-program program))
 
 ;   uncover-frame-conflict
 ;   add frame-conflict-graph for each body
@@ -398,7 +445,7 @@
                 (let ([ls-ef1 (uncover-effect ef1 live-set)]
                       [ls-ef2 (uncover-effect ef2 live-set)])
                     (uncover-pred pr (union ls-ef1 ls-ef2)))]
-            [(set! ,v (,binop ,tr1 ,tr2))
+            [(set! ,v (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra mref)))
                 (let ([ls (try-to-delete v live-set)])
                     (begin
                         (if (or (frame-var? v) (uvar? v)) (add-conflict v ls) `())
@@ -408,6 +455,7 @@
                     (begin
                         (if (or (frame-var? v) (uvar? v)) (add-conflict v (difference ls `(,tr))) `())
                         (try-to-add tr ls)))]
+            [(mset! ,tr1 ,tr2 ,tr3) (try-to-add tr1 (try-to-add tr2 (try-to-add tr3 live-set)))]
             [(return-point ,lb ,tl)
                 (begin
                     (set! clv* (union clv* (deep-copy live-set)))
@@ -502,7 +550,7 @@
     (define (assign-helper nfv* cnt)
         (if (null? nfv*)
             `()
-            (cons (list (car nfv*) (index->frame-var (+ n 1 cnt)))
+            (cons (list (car nfv*) (index->frame-var (+ (+ n cnt) 1)))
                   (assign-helper (cdr nfv*) (+ cnt 1)))))
     
     (define (max a b) (if (> a b) a b))
@@ -517,7 +565,7 @@
     
     (define (assign-tail tail)
         (match tail
-            [(if ,pr ,[assign-tail -> tl1] ,[assign-tail -> tl2]) `(if ,pr ,tl1 ,tl2)]
+            [(if ,[assign-tail -> pr] ,[assign-tail -> tl1] ,[assign-tail -> tl2]) `(if ,pr ,tl1 ,tl2)]
             [(begin ,[assign-effect -> ef*] ... ,[assign-tail -> tl]) (make-begin `(,ef* ... ,tl)) ]
             [(,tr ,loc* ...) `(,tr ,loc* ...)]))
     
@@ -534,8 +582,10 @@
             [(nop) `(nop)]
             [(begin ,[assign-effect -> ef1*] ... ,[assign-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
             [(if ,[assign-pred -> pr] ,[assign-effect -> ef1] ,[assign-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
+            [(set! ,v (mref ,tr1 ,tr2)) `(set! ,v (mref ,tr1 ,tr2))]
             [(set! ,v (,binop ,tr1 ,tr2)) `(set! ,v (,binop ,tr1 ,tr2))]
             [(set! ,v ,tr) `(set! ,v ,tr)]
+            [(mset! ,tr1 ,tr2 ,tr3) `(mset! ,tr1 ,tr2 ,tr3)]
             [(return-point ,lb ,tl)
                 (make-begin
 					`((set! ,frame-pointer-register (+ ,frame-pointer-register ,(ash (+ 1 n) align-shift)))
@@ -596,12 +646,14 @@
                     `(begin ,ef1* ... ,ef2)]
                 [(if ,[(makefunc-pred env) -> pr] ,[(makefunc-effect env) -> ef1] ,[(makefunc-effect env) -> ef2])
                     `(if ,pr ,ef1 ,ef2)]
-                [(set! ,v (,binop ,tr1 ,tr2))
+                [(set! ,v (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra mref)))
                     `(set! ,((f env) v) (,binop ,((f env) tr1) ,((f env) tr2)))]
                 [(set! ,v ,tr)
                     (if (eq? ((f env) v) ((f env) tr))
                         `(nop)
                         `(set! ,((f env) v) ,((f env) tr)))]
+                [(mset! ,tr1 ,tr2 ,tr3)
+                    `(mset! ,((f env) tr1) ,((f env) tr2) ,((f env) tr3))]
                 [(return-point ,lb ,[(makefunc-tail env) -> tl])
                     `(return-point ,lb ,tl)])))
                     
@@ -615,7 +667,7 @@
     (finalize-program program))
 
 ;   select-instructions
-;   rewrite set! & (triv) 
+;   rewrite set! & (triv)
 
 (define (select-instructions program)
     (define (operator^ relop)
@@ -682,6 +734,41 @@
                 (values (make-begin `(,ef1* ... ,ef2)) (apply append u-ef2 u-ef1*))]
             [(if ,[select-pred -> pr u-pr] ,[select-effect -> ef1 u-ef1] ,[select-effect -> ef2 u-ef2])
                 (values `(if ,pr ,ef1 ,ef2) (append u-pr u-ef1 u-ef2))]
+            [(set! ,v (mref ,tr1 ,tr2))
+                (cond 
+                    [(and (not (register? v)) (not (uvar? v)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv (mref ,tr1 ,tr2))
+                                                                     (set! ,v ,uv)))])
+                                (values ef (cons uv u-ef))))]
+                    [(integer? tr1)
+                        (cond
+                            [(or (register? tr2) (uvar? tr2))
+                                (values `(set! ,v (mref ,tr1 ,tr2)) `())]
+                            [else
+                                (let ([uv (unique-name 't)])
+                                    (values `(begin (set! ,uv ,tr2) (set! ,v (mref ,tr1 ,uv))) `(,uv)))])]
+                    [(integer? tr2)
+                        (cond
+                            [(or (register? tr1) (uvar? tr1))
+                                (values `(set! ,v (mref ,tr1 ,tr2)) `())]
+                            [else
+                                (let ([uv (unique-name 't)])
+                                    (values `(begin (set! ,uv ,tr1) (set! ,v (mref ,uv ,tr2))) `(,uv)))])]
+                    [(and (not (register? tr1)) (not (uvar? tr1)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv ,tr1)
+                                                                     (set! ,v (mref ,uv ,tr2))))])
+                                (values ef (cons uv u-ef))))]
+                    [(and (not (register? tr2)) (not (uvar? tr2)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv ,tr2)
+                                                                     (set! ,v (mref ,tr1 ,uv))))])
+                                (values ef (cons uv u-ef))))]
+                    [else (values `(set! ,v (mref ,tr1 ,tr2)) `())])]
             [(set! ,v (,binop ,tr1 ,tr2))
                 (cond
                     [(and (not (eq? v tr1)) (eq? v tr2) (memq binop `(+ * logand logor)))
@@ -728,6 +815,41 @@
 							(values `(begin (set! ,uv ,tr) (set! ,v ,uv)) `(,uv)))]
                     [else 
                         (values `(set! ,v ,tr) `())])]
+            [(mset! ,tr1 ,tr2 ,tr3)
+                (cond 
+                    [(and (not (register? tr3)) (not (uvar? tr3)) (not (integer? tr3)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv ,tr3)
+                                                                     (mset! ,tr1 ,tr2 ,uv)))])
+                                (values ef (cons uv u-ef))))]
+                    [(integer? tr1)
+                        (cond
+                            [(or (register? tr2) (uvar? tr2))
+                                (values `(mset! ,tr1 ,tr2 ,tr3) `())]
+                            [else
+                                (let ([uv (unique-name 't)])
+                                    (values `(begin (set! ,uv ,tr2) (mset! ,tr1 ,uv ,tr3)) `(,uv)))])]
+                    [(integer? tr2)
+                        (cond
+                            [(or (register? tr1) (uvar? tr1))
+                                (values `(mset! ,tr1 ,tr2 ,tr3) `())]
+                            [else
+                                (let ([uv (unique-name 't)])
+                                    (values `(begin (set! ,uv ,tr1) (mset! ,uv ,tr2 ,tr3)) `(,uv)))])]
+                    [(and (not (register? tr1)) (not (uvar? tr1)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv ,tr1)
+                                                                     (mset! ,uv ,tr2 ,tr3)))])
+                                (values ef (cons uv u-ef))))]
+                    [(and (not (register? tr2)) (not (uvar? tr2)))
+                        (let ([uv (unique-name 't)])
+                            (let-values ([(ef u-ef) (select-effect `(begin
+                                                                     (set! ,uv ,tr2)
+                                                                     (mset! ,tr1 ,uv ,tr3)))])
+                                (values ef (cons uv u-ef))))]
+                    [else (values `(mset! ,tr1 ,tr2 ,tr3) `())])]
             [(return-point ,lb ,[select-tail -> tl u-tl])
                 (values `(return-point ,lb ,tl) u-tl)]))
 
@@ -860,7 +982,7 @@
                 (let ([ls-ef1 (uncover-effect ef1 live-set)]
                       [ls-ef2 (uncover-effect ef2 live-set)])
                     (uncover-pred pr (union ls-ef1 ls-ef2)))]
-            [(set! ,v (,binop ,tr1 ,tr2))
+            [(set! ,v (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra mref)))
                 (let ([ls (try-to-delete v live-set)])
                     (begin
                         (if (or (register? v) (uvar? v)) (add-conflict v ls) `())
@@ -870,6 +992,7 @@
                     (begin
                         (if (or (register? v) (uvar? v)) (add-conflict v (difference ls `(,tr))) `())
                         (try-to-add tr ls)))]
+            [(mset! ,tr1 ,tr2 ,tr3) (try-to-add tr1 (try-to-add tr2 (try-to-add tr3 live-set)))]
             [(return-point ,lb ,tl) (uncover-tail tl)]))
     
     (uncover-program program))
@@ -989,7 +1112,7 @@
         (lambda (x)
             (cond
                 [(frame-var? x) x]
-                 [(and (uvar? x) (assq x assignment)) (cadr (assq x assignment))]
+                [(and (uvar? x) (assq x assignment)) (cadr (assq x assignment))]
                 [else `invalid])))
 
     ; (conflict-graph spill* assignment) -> (as)
@@ -1024,7 +1147,7 @@
                 `(locate ,as ,tl)]))
 
     (assign-program program))
-    
+
 ;   discard-call-live
 ;   in tail: (triv loc*) -> (triv)
 
@@ -1060,6 +1183,7 @@
             [(if ,[discard-pred -> pr] ,[discard-effect -> ef1] ,[discard-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
             [(set! ,v (,binop ,tr1 ,tr2)) `(set! ,v (,binop ,tr1 ,tr2))]
             [(set! ,v ,tr) `(set! ,v ,tr)]
+            [(mset! ,tr1 ,tr2 ,tr3) `(mset! ,tr1 ,tr2 ,tr3)]
             [(return-point ,lb ,[discard-tail -> tl]) `(return-point ,lb ,tl)]))
     
     (discard-program program))
@@ -1107,12 +1231,14 @@
                     `(begin ,ef1* ... ,ef2)]
                 [(if ,[(makefunc-pred env) -> pr] ,[(makefunc-effect env) -> ef1] ,[(makefunc-effect env) -> ef2])
                     `(if ,pr ,ef1 ,ef2)]
-                [(set! ,v (,binop ,tr1 ,tr2))
+                [(set! ,v (,binop ,tr1 ,tr2)) (guard (memq binop `(+ - * logand logor sra mref)))
                     `(set! ,((f env) v) (,binop ,((f env) tr1) ,((f env) tr2)))]
                 [(set! ,v ,tr)
                     (if (eq? ((f env) v) ((f env) tr))
                         `(nop)
                         `(set! ,((f env) v) ,((f env) tr)))]
+                [(mset! ,tr1 ,tr2 ,tr3)
+                    `(mset! ,((f env) tr1) ,((f env) tr2) ,((f env) tr3))]
                 [(return-point ,lb ,[(makefunc-tail env) -> tl])
                     `(return-point ,lb ,tl)])))
     
@@ -1123,7 +1249,7 @@
                 (cadr (assq x env))
                 x)))
     
-    (finalize-program program));   expose-frame-var
+    (finalize-program program))
 
 ;   expose-frame-var
 ;   fvn -> #<disp rbp 8 * n>
@@ -1194,9 +1320,12 @@
                     (values effect (+ offset off))
                     (values effect (- offset off)))]
             [(set! ,[(expose-triv offset) -> loc] (,binop ,[(expose-triv offset) -> tr1] ,[(expose-triv offset) -> tr2]))
-                (values `(set! ,loc (,binop ,tr1 ,tr2)) offset)]
+                (guard (memq binop `(+ - * logand logor sra mref)))
+                    (values `(set! ,loc (,binop ,tr1 ,tr2)) offset)]
             [(set! ,[(expose-triv offset) -> loc] ,[(expose-triv offset) -> tr])
                 (values `(set! ,loc ,tr) offset)]
+            [(mset! ,[(expose-triv offset) -> tr1] ,[(expose-triv offset) -> tr2] ,[(expose-triv offset) -> tr3])
+                (values `(mset! ,tr1 ,tr2 ,tr3) offset)]
             [(return-point ,lb ,tl)
                 (let*-values ([(new-tl off-tl) (expose-tail tl offset)])
                     (values `(return-point ,lb ,new-tl) off-tl))]))
@@ -1214,6 +1343,50 @@
                               [(new-tl2 off-tl2) (expose-tail tl2 0)])
                     `(letrec ([,lb* (lambda () ,new-tl1*)] ...) ,new-tl2))]))
 
+    (expose-program program))
+
+;   expose-memory-operands
+;   mset! & mref -> disp-opnd
+
+(define (expose-memory-operands program)
+    (define (expose-program program)
+        (match program
+            [(letrec ([,lb* (lambda () ,[expose-tail -> tl1*])] ...) ,[expose-tail -> tl2])
+                `(letrec ([,lb* (lambda () ,tl1*)] ...) ,tl2)]))
+
+    (define (expose-tail tail)
+        (match tail
+            [(begin ,[expose-effect -> ef*] ... ,[expose-tail -> tl]) `(begin ,ef* ... ,tl)]
+	        [(if ,[expose-pred -> pr] ,[expose-tail -> tl1] ,[expose-tail -> tl2]) `(if ,pr ,tl1 ,tl2)]
+	        [(,tr)  `(,tr)]))
+
+    (define (expose-pred pred)
+        (match pred
+            [(true) `(true)]
+            [(false) `(false)]
+            [(if ,[expose-pred -> pr1] ,[expose-pred -> pr2] ,[expose-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[expose-effect -> ef*] ... ,[expose-pred -> pr]) (make-begin `(,ef* ... ,pr))]
+            [(,relop ,tr1 ,tr2) `(,relop ,tr1 ,tr2)]))
+    
+    (define (expose-effect effect)
+        (match effect
+            [(nop) `(nop)]
+            [(begin ,[expose-effect -> ef1*] ... ,[expose-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
+            [(if ,[expose-pred -> pr] ,[expose-effect -> ef1] ,[expose-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
+            [(set! ,v (mref ,tr1 ,tr2))
+                (cond
+                    [(integer? tr1) `(set! ,v ,(make-disp-opnd tr2 tr1))]
+                    [(integer? tr2) `(set! ,v ,(make-disp-opnd tr1 tr2))]
+                    [else `(set! ,v ,(make-index-opnd tr1 tr2))])]
+            [(set! ,v (,binop ,tr1 ,tr2)) `(set! ,v (,binop ,tr1 ,tr2))]
+            [(set! ,v ,tr) `(set! ,v ,tr)]
+            [(mset! ,tr1 ,tr2 ,tr3)
+                (cond
+                    [(integer? tr1) `(set! ,(make-disp-opnd tr2 tr1) ,tr3)]
+                    [(integer? tr2) `(set! ,(make-disp-opnd tr1 tr2) ,tr3)]
+                    [else `(set! ,(make-index-opnd tr1 tr2) ,tr3)])]
+            [(return-point ,lb ,[expose-tail -> tl]) `(return-point ,lb ,tl)]))
+    
     (expose-program program))
 
 ;   expose-basic-blocks
@@ -1336,8 +1509,7 @@
             (let ([nxt-lb (if (null? (cdr label*)) `a (car (cdr label*)))])
                 (append `(,(car label*)) 
                         (flat-tail (car tail*) nxt-lb)
-                        (flat-lambdas (cdr label*) (cdr tail*))))
-            ))
+                        (flat-lambdas (cdr label*) (cdr tail*))))))
         
     (flat-program program))
 
