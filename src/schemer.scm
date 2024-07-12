@@ -3,6 +3,99 @@
 
 (define (verify-scheme x) x)
 
+;   specify representation
+;   discard different data types
+
+(define (specify-representation program)
+    (define (specify-program program)
+        (match program
+            [(letrec ([,lb* (lambda ,para** ,[specify-value -> val1*])] ...) ,[specify-value -> val2])
+                `(letrec ([,lb* (lambda ,para** ,val1*)] ...) ,val2)]))
+    
+    (define (specify-value value)
+        (match value
+            [(quote ,imm)
+                (case imm
+                    [#t $true]
+                    [#f $false]
+                    [`() $nil]
+                    [else (ash imm shift-fixnum)])]
+            [(void) $void]
+            [(* ,[specify-value -> val1] ,[specify-value -> val2])
+                (cond
+                    [(integer? val1) `(* ,(sra val1 shift-fixnum) ,val2)]
+                    [(integer? val2) `(* ,val1 ,(sra val2 shift-fixnum))]
+                    [else `(* (sra ,val1 ,shift-fixnum) ,val2)])]
+            [(+ ,[specify-value -> val1] ,[specify-value -> val2]) `(+ ,val1 ,val2)]
+            [(- ,[specify-value -> val1] ,[specify-value -> val2]) `(- ,val1 ,val2)]
+            [(car ,[specify-value -> val]) `(mref ,val ,(- disp-car tag-pair))]
+            [(cdr ,[specify-value -> val]) `(mref ,val ,(- disp-cdr tag-pair))]
+            [(cons ,[specify-value -> val1] ,[specify-value -> val2])
+                (let ([tmp (unique-name 'cons)])
+					`(let ([,tmp (+ (alloc ,size-pair) ,tag-pair)])
+						(begin
+							(mset! ,tmp ,(- disp-car tag-pair) ,val1)
+							(mset! ,tmp ,(- disp-cdr tag-pair) ,val2)
+							,tmp)))]
+            [(make-vector ,[specify-value -> val])
+				(if (integer? val)
+                    (let ([tmp (unique-name 'makev)])
+                        `(let ([,tmp (+ (alloc ,(+ disp-vector-data val)) ,tag-vector)])
+							(begin
+								(mset! ,tmp ,(- disp-vector-length tag-vector) ,val)
+								,tmp)))
+                    (let ([tmp1 (unique-name 'makev)]
+                          [tmp2 (unique-name 'makev)])
+                        `(let ([,tmp1 ,val])
+                            (let ([,tmp2 (+ (alloc (+ ,disp-vector-data ,tmp1)) ,tag-vector)])
+								(begin
+									(mset! ,tmp2 ,(- disp-vector-length tag-vector) ,tmp1)
+									,tmp2)))))]
+            [(vector-length ,[specify-value -> val])
+                `(mref ,val, (- disp-vector-length tag-vector))]
+            [(vector-ref ,[specify-value -> val1] ,[specify-value -> val2])
+				(if (integer? val2) 
+					`(mref ,val1 ,(+ (- disp-vector-data tag-vector) val2))
+					`(mref ,val1 (+ ,(- disp-vector-data tag-vector) ,val2)))]
+            [,uv (guard (uvar? uv)) uv]
+            [,lb (guard (label? lb)) lb]
+            [(if ,[specify-pred -> pr] ,[specify-value -> val1] ,[specify-value -> val2]) `(if ,pr ,val1 ,val2)]
+            [(begin ,[specify-effect -> ef*] ... ,[specify-value -> val]) (make-begin `(,ef* ... ,val))]
+            [(let ([,uv* ,[specify-value -> val1*]] ...) ,[specify-value -> val2]) `(let ([,uv* ,val1*] ...) ,val2)]
+            [(,[specify-value -> val1] ,[specify-value -> val2*] ...) `(,val1 ,val2* ...)]))
+    
+    (define (specify-pred pred)
+        (match pred
+            [(eq? ,[specify-value -> val1] ,[specify-value -> val2]) `(= ,val1 ,val2)]
+            [(boolean? ,[specify-value -> val]) `(= (logand ,val ,mask-boolean) ,tag-boolean)]
+            [(fixnum? ,[specify-value -> val]) `(= (logand ,val ,mask-fixnum) ,tag-fixnum)]
+            [(null? ,[specify-value -> val]) `(= ,val ,$nil)]
+            [(pair? ,[specify-value -> val]) `(= (logand ,val ,mask-pair) ,tag-pair)]
+            [(vector? ,[specify-value -> val]) `(= (logand ,val ,mask-vector) ,tag-vector)]
+            [(,relop ,[specify-value -> val1] ,[specify-value -> val2])
+                (guard (memq relop `(> < >= <= =))) `(,relop ,val1 ,val2)]
+            [(true) `(true)]
+            [(false) `(false)]
+            [(if ,[specify-pred -> pr1] ,[specify-pred -> pr2] ,[specify-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[specify-effect -> ef*] ... ,[specify-pred -> pr]) (make-begin `(,ef* ... ,pr))]
+            [(let ([,uv* ,[specify-value -> val*]] ...) ,[specify-pred -> pr]) `(let ([,uv* ,val*] ...) ,pr)]))
+    
+    (define (specify-effect effect)
+        (match effect
+            [(set-car! ,[specify-value -> val1] ,[specify-value -> val2]) `(mset! ,val1 ,(- disp-car tag-pair) ,val2)]
+            [(set-cdr! ,[specify-value -> val1] ,[specify-value -> val2]) `(mset! ,val1 ,(- disp-cdr tag-pair) ,val2)]
+            [(vector-set! ,[specify-value -> val1] ,[specify-value -> val2] ,[specify-value -> val3])
+                (if (integer? val2) 
+					`(mset! ,val1 ,(+ (- disp-vector-data tag-vector) val2) ,val3)
+					`(mset! ,val1 (+ ,(- disp-vector-data tag-vector) ,val2) ,val3))]
+            [(nop) `(nop)]
+            [(if ,[specify-pred -> pr] ,[specify-effect -> ef1] ,[specify-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
+            [(begin ,[specify-effect -> ef1*] ... ,[specify-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
+            [(let ([,uv* ,[specify-value -> val*]] ...) ,[specify-effect -> ef]) `(let ([,uv* ,val*] ...) ,ef)]
+            [(,[specify-value -> val1] ,[specify-value -> val2*] ...) `(,val1 ,val2* ...)]))
+
+    (specify-program program))
+
 ;   uncover-locals
 ;   find uvars and add body structure
 
@@ -48,7 +141,7 @@
         (match value
             [(if ,[uncover-pred -> pr] ,[uncover-value -> val1] ,[uncover-value -> val2]) (union pr val1 val2)]
             [(begin ,[uncover-effect -> ef*] ... ,[uncover-value -> val]) (union `(,ef* ... ...) val)]
-            [(let ([,uv* ,[uncover-value -> val*]] ...) ,[uncover-value -> val]) (union uv* `(,val* ... ...) val)]
+            [(let ([,uv* ,[uncover-value -> val1*]] ...) ,[uncover-value -> val2]) (union uv* `(,val1* ... ...) val2)]
             [(,binop ,[uncover-value -> val1] ,[uncover-value -> val2])
                 (guard (memq binop `(+ - * logand logor sra mref))) (union val1 val2)]
             [(alloc ,[uncover-value -> val]) val]

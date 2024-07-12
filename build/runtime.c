@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -12,111 +11,14 @@
 
 #define stack_size 100000
 #define heap_size 100000
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <signal.h>
-#include <ucontext.h>
-#include <errno.h>
-#include <string.h>
-#include <fcntl.h>
 
-#define stack_size 100000
-#define heap_size 100000
-
-#ifdef __APPLE__
 #ifdef __APPLE__
 #define SCHEME_ENTRY scheme_entry
 #endif
 #ifdef __linux__
-#endif
-#ifdef __linux__
 #define SCHEME_ENTRY _scheme_entry
 #endif 
-#endif 
 
-extern long SCHEME_ENTRY(char *, char *); 
-
-/* locally defined functions */
-static char *guarded_area(long n);
-#ifdef __APPLE__
-static void segv_handler(int signo, siginfo_t *info, void *ignore);
-#endif
-#ifdef __linux__
-static void segv_handler(int signo, struct sigcontext sc);
-#endif
-static void bus_handler(int signo);
-static void usage_error(char *who);
-static void print(long x);
-
-/* local stack/heap management variables */
-static long pagesize;
-static char *heap;
-static char *stack;
-static long heapsize;
-static long stacksize;
-
-int main(int argc, char *argv[]) {
-  struct sigaction action;
-  sigset_t s_set;
-  int n;
-
-  pagesize = sysconf(_SC_PAGESIZE);
-
-  stacksize = stack_size * sizeof(void *);
-  heapsize = heap_size * sizeof(void *);
-
-  for (n = 1; n < argc; n++)
-    if ((*argv[n] == '-') && (*(argv[n]+2) == 0))
-      switch (*(argv[n]+1)) {
-        case 'h': /* heap size option */
-          argv[n] = (char *)NULL;
-          if (++n == argc) usage_error(argv[0]);
-          heapsize = atoi(argv[n]);
-          if (heapsize <= 0) usage_error(argv[0]);
-          break;
-        case 's': /* stack size option */
-          argv[n] = (char *)NULL;
-          if (++n == argc) usage_error(argv[0]);
-          stacksize = atoi(argv[n]);
-          if (stacksize <= 0) usage_error(argv[0]);
-          break;
-        default:
-          usage_error(argv[0]);
-      }
-    else
-      usage_error(argv[0]);
-   
- /* round stack and heap sizes to even pages */
-  stacksize = ((stacksize + pagesize - 1) / pagesize) * pagesize;
-  heapsize = ((heapsize + pagesize - 1) / pagesize) * pagesize;
-
-  stack = guarded_area(stacksize);
-  heap = guarded_area(heapsize);
-
- /* Set up segmentation fault signal handler to catch stack and heap
-  * overflow and some memory faults */
-  sigemptyset(&s_set);
-#ifdef __linux__
-  action.sa_handler = (void *)segv_handler;
-  action.sa_flags = SA_RESETHAND;
-#else
-  action.sa_sigaction = segv_handler;
-  action.sa_flags = SA_SIGINFO | SA_RESETHAND;
-#endif
-  action.sa_mask = s_set;
-  if (sigaction(SIGSEGV, &action, NULL)) {
-    fprintf(stderr, "sigaction failed: %s\n", strerror(errno));
-    fprintf(stderr, "  overflow checking may not work\n");
-  }
-
- /* Set up bus error signal handler to catch remaining memory faults */
-  sigemptyset(&s_set);
-  action.sa_handler = bus_handler;
-  action.sa_mask = s_set;
-  action.sa_flags = SA_RESETHAND;
-  if (sigaction(SIGBUS, &action, NULL)) {
-      fprintf(stderr, "sigaction failed: %s\n", strerror(errno));
 extern long SCHEME_ENTRY(char *, char *); 
 
 /* locally defined functions */
