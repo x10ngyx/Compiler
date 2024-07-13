@@ -9,15 +9,135 @@
 
 (define (verify-scheme x) x)
 
+;   uncover-free
+;   find free variables in each procedure
+
+(define (uncover-free expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (uncover-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) (values expr `(,uv))]
+            [(quote ,imm) (values expr `())]
+            [(if ,[uncover-expr -> ex1 uv1*] ,[uncover-expr -> ex2 uv2*] ,[uncover-expr -> ex3 uv3*])
+                (values `(if ,ex1 ,ex2 ,ex3) (union uv1* uv2* uv3*))]
+            [(begin ,[uncover-expr -> ex1* uv1**] ... ,[uncover-expr -> ex2 uv2*])
+                (values (make-begin `(,ex1* ... ,ex2)) (union uv2* (apply union uv1**)))]
+            [(let ([,uv* ,[uncover-expr -> ex1* uv1**]] ...) ,[uncover-expr -> ex2 uv2*])
+                (values `(let ([,uv* ,ex1*] ...) ,ex2) (union (difference uv2* uv*) (apply union uv1**)))]
+            [(letrec ([,uv* (lambda ,para** ,[uncover-expr -> ex1* uv1**])] ...) ,[uncover-expr -> ex2 uv2*])
+                (let ([free-uv** (map difference uv1** para**)])
+                    (values `(letrec ([,uv* (lambda ,para** (free ,free-uv** ,ex1*))] ...) ,ex2)
+                            (union (difference (apply union free-uv**) uv*) (difference uv2* uv*))))]
+            [(,p ,[uncover-expr -> ex* uv**] ...) (guard (memq p prim*)) 
+                (values `(,p ,ex* ...) (apply union uv**))]
+            [(,[uncover-expr -> ex1 uv1*] ,[uncover-expr -> ex2* uv2**] ...) 
+                (values `(,ex1 ,ex2* ...) (union uv1* (apply union uv2**)))]))
+
+    (let-values ([(ex uv*) (uncover-expr expr)]) ex))
+
+;   convert-closures
+;   add closure form and some other changes
+
+(define (convert-closures expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (create-cp x) (unique-name `cp))
+    (define (convert-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(if ,[convert-expr -> ex1] ,[convert-expr -> ex2] ,[convert-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[convert-expr -> ex1*] ... ,[convert-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(letrec ([,uv* (lambda ,para** (free ,fuv** ,[convert-expr -> ex1*]))] ...) ,[convert-expr -> ex2])
+                (let ([lb* (map unique-label uv*)]
+                      [cp* (map create-cp uv*)])
+                    `(letrec ([,lb* (lambda (,cp* ,para** ...)
+                                            (bind-free (,cp* ,fuv** ...) ,ex1*))] ...)
+                             (closures ([,uv* ,lb* ,fuv** ...] ...) ,ex2)))]
+            [(,p ,[convert-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[convert-expr -> ex1] ,[convert-expr -> ex2*] ...) `(,ex1 ,ex2* ...)
+                (if (uvar? ex1)
+                    `(,ex1 ,ex1 ,ex2* ...)
+                    (let ([tmp (unique-name `temp)])
+                        `(let ([,tmp ,ex1])
+                            (,tmp ,tmp ,ex2* ...))))]))
+    
+    (convert-expr expr))
+
+;   introduce-procedure-primitives
+;   use closure to handle free variables 
+
+(define (introduce-procedure-primitives expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (kth aim ls cnt)
+        (if (eq? aim (car ls))
+            cnt
+            (kth aim (cdr ls) (+ 1 cnt))))
+
+    (define (makeproc uv lb fuv*)
+        `[,uv (make-procedure ,lb (quote ,(length fuv*)))])
+    (define (helper uv lb ls* cnt cp fuv*)
+        (if (null? ls*)
+            `()
+            (let ([fir `(procedure-set! ,uv (quote ,cnt) ,(get (car ls*) cp fuv*))]
+                  [rem (helper uv lb (cdr ls*) (+ 1 cnt) cp fuv*)])
+                (cons fir rem))))
+    (define (procset cp fuv*)
+        (lambda (uv lb ls*) (helper uv lb ls* 0 cp fuv*)))
+    
+    (define (get uv cp fuv*)
+        (if (memq uv fuv*)
+            `(procedure-ref ,cp (quote ,(kth uv fuv* 0)))
+            uv))
+
+    (define (intro-closure cp fuv*)
+        (lambda (closure)
+            (match closure
+                [(closures ([,uv* ,lb* ,fuv** ...] ...) ,[(intro-expr cp fuv*) -> ex])
+                    (let ([makeproc* (map makeproc uv* lb* fuv**)]
+                          [procset* (map (procset cp fuv*) uv* lb* fuv**)])
+                        `(let ,makeproc* ,(make-begin `(,procset* ... ... ,ex))))])))
+    
+    (define (intro-lambda lamb)
+        (match lamb
+            [(lambda ,para* (bind-free (,cp ,fuv* ...) ,ex))
+                `(lambda ,para* ,((intro-expr cp fuv*) ex))]))
+
+    (define (intro-expr cp fuv*)
+        (lambda (expr)
+            (match expr
+                [,uv (guard (uvar? uv)) (get uv cp fuv*)]
+                [(quote ,imm) expr]
+                [(if ,[(intro-expr cp fuv*) -> ex1] ,[(intro-expr cp fuv*) -> ex2] ,[(intro-expr cp fuv*) -> ex3])
+                    `(if ,ex1 ,ex2 ,ex3)]
+                [(begin ,[(intro-expr cp fuv*) -> ex1*] ... ,[(intro-expr cp fuv*) -> ex2])
+                    (make-begin `(,ex1* ... ,ex2))]
+                [(let ([,uv* ,[(intro-expr cp fuv*) -> ex1*]] ...) ,[(intro-expr cp fuv*) -> ex2])
+                    `(let ([,uv* ,ex1*] ...) ,ex2)]
+                [(letrec ([,lb* ,[intro-lambda -> ex1*]] ...) ,[(intro-closure cp fuv*) -> ex2])
+                    `(letrec ([,lb* ,ex1*] ...) ,ex2)]
+                [(,p ,[(intro-expr cp fuv*) -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+                [(,[(intro-expr cp fuv*) -> proc] ,[(intro-expr cp fuv*) -> arg1] ,[(intro-expr cp fuv*) -> arg*] ...)
+                    `((procedure-code ,proc) ,arg1 ,arg* ...)])))
+    ((intro-expr `() `()) expr))
+
 ;   lift-letrec
 ;   bring letrec to the outer layer
 
 (define (lift-letrec expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
     (define prim* (append val-prim* pr-prim* ef-prim*))
-
     (define proc* `())
     (define (lift-expr expr)
         (match expr
@@ -43,9 +163,9 @@
 ;   distinguish value, pred, effect
 
 (define (normalize-context program)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
     (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (make-nopless-begin x*)
         (let ([x* (remove `(nop) x*)])
@@ -158,11 +278,29 @@
 									(mset! ,tmp2 ,(- disp-vector-length tag-vector) ,tmp1)
 									,tmp2)))))]
             [(vector-length ,[specify-value -> val])
-                `(mref ,val, (- disp-vector-length tag-vector))]
+                `(mref ,val ,(- disp-vector-length tag-vector))]
             [(vector-ref ,[specify-value -> val1] ,[specify-value -> val2])
 				(if (integer? val2) 
 					`(mref ,val1 ,(+ (- disp-vector-data tag-vector) val2))
 					`(mref ,val1 (+ ,(- disp-vector-data tag-vector) ,val2)))]
+            [(make-procedure ,[specify-value -> val1] ,[specify-value -> val2])
+                (if (integer? val2)
+                    (let ([tmp (unique-name 'makep)])
+                        `(let ([,tmp (+ (alloc ,(+ disp-procedure-data val2)) ,tag-procedure)])
+                            (begin
+                                (mset! ,tmp ,(- disp-procedure-code tag-procedure) ,val1)
+                                ,tmp)))
+                    (let ([tmp (unique-name 'makep)])
+                        `(let ([,tmp (+ (alloc (+ ,disp-procedure-data ,val2)) ,tag-vector)])
+							(begin
+								(mset! ,tmp ,(- disp-procedure-code tag-procedure) ,val1)
+								,tmp))))]
+            [(procedure-code ,[specify-value -> val])
+				`(mref ,val ,(- disp-procedure-code tag-procedure))]
+            [(procedure-ref ,[specify-value -> val1] ,[specify-value -> val2])
+				(if (integer? val2) 
+					`(mref ,val1 ,(+ (- disp-procedure-data tag-procedure) val2))
+					`(mref ,val1 (+ ,(- disp-procedure-data tag-procedure) ,val2)))]
             [,uv (guard (uvar? uv)) uv]
             [,lb (guard (label? lb)) lb]
             [(if ,[specify-pred -> pr] ,[specify-value -> val1] ,[specify-value -> val2]) `(if ,pr ,val1 ,val2)]
@@ -178,6 +316,7 @@
             [(null? ,[specify-value -> val]) `(= ,val ,$nil)]
             [(pair? ,[specify-value -> val]) `(= (logand ,val ,mask-pair) ,tag-pair)]
             [(vector? ,[specify-value -> val]) `(= (logand ,val ,mask-vector) ,tag-vector)]
+            [(procedure? ,[specify-value -> val]) `(= (logand ,val ,mask-procedure) ,tag-procedure)]
             [(,relop ,[specify-value -> val1] ,[specify-value -> val2])
                 (guard (memq relop `(> < >= <= =))) `(,relop ,val1 ,val2)]
             [(true) `(true)]
@@ -194,6 +333,10 @@
                 (if (integer? val2) 
 					`(mset! ,val1 ,(+ (- disp-vector-data tag-vector) val2) ,val3)
 					`(mset! ,val1 (+ ,(- disp-vector-data tag-vector) ,val2) ,val3))]
+            [(procedure-set! ,[specify-value -> val1] ,[specify-value -> val2] ,[specify-value -> val3])
+                (if (integer? val2) 
+					`(mset! ,val1 ,(+ (- disp-procedure-data tag-procedure) val2) ,val3)
+					`(mset! ,val1 (+ ,(- disp-procedure-data tag-procedure) ,val2) ,val3))]
             [(nop) `(nop)]
             [(if ,[specify-pred -> pr] ,[specify-effect -> ef1] ,[specify-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
             [(begin ,[specify-effect -> ef1*] ... ,[specify-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
