@@ -1,10 +1,11 @@
-(specify-representation
+(optimize-jumps
 
-`(letrec ()
-      (let ([n.1 '2] [i.2 '0] [j.3 '1])
-        (let ([v.4 (make-vector n.1)])
-          (begin
-            (vector-set! v.4 i.2 '5)
-            (vector-set! v.4 j.3 '7)
-            (- (vector-ref v.4 i.2) (vector-ref v.4 j.3))))))
+
+`(letrec ([f$1 (lambda () (f$2))]
+[f$2 (lambda () (f$1))])
+(f$1))
 )
+
+(test-one
+`(let ([a.1 '10])
+       (let ([b.2 (if (< '7 a.1) a.1 (+ a.1 a.1))]) b.2)))

@@ -1,7 +1,113 @@
+(define (deep-copy obj)
+    (cond
+        ((null? obj) '())
+        ((pair? obj) (cons (deep-copy (car obj)) (deep-copy (cdr obj))))
+        (else obj)))
+        
 ;   verify-scheme
 ;   do nonthing
 
 (define (verify-scheme x) x)
+
+;   lift-letrec
+;   bring letrec to the outer layer
+
+(define (lift-letrec expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+
+    (define proc* `())
+    (define (lift-expr expr)
+        (match expr
+            [,lb (guard (label? lb)) expr]
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(if ,[lift-expr -> ex1] ,[lift-expr -> ex2] ,[lift-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[lift-expr -> ex1*] ... ,[lift-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[lift-expr -> ex1*]] ...) ,[lift-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(letrec ([,lb* (lambda ,para** ,[lift-expr -> ex1*])] ...) ,[lift-expr -> ex2])
+                (begin
+                    (set! proc* (append proc* (deep-copy `([,lb* (lambda ,para** ,ex1*)] ...))))
+                    ex2)]
+            [(,p ,[lift-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[lift-expr -> ex1] ,[lift-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+
+    (begin
+        (set! proc* `())
+        (let ([ex (lift-expr expr)])
+            `(letrec ,proc* ,ex))))
+
+;   normalize-context
+;   distinguish value, pred, effect
+
+(define (normalize-context program)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (make-nopless-begin x*)
+        (let ([x* (remove `(nop) x*)])
+            (if (null? x*)
+            `(nop)
+            (make-begin x*))))
+
+    (define (normalize-program program)
+        (match program
+            [(letrec ([,lb* (lambda ,para** ,[normalize-value -> val1*])] ...) ,[normalize-value -> val2])
+                `(letrec ([,lb* (lambda ,para** ,val1*)] ...) ,val2)]))
+    
+    (define (normalize-value value)
+        (match value
+            [,lb (guard (label? lb)) value]
+            [,uv (guard (uvar? uv)) value]
+            [(quote ,imm) value]
+            [(if ,[normalize-pred -> pr] ,[normalize-value -> val1] ,[normalize-value -> val2]) `(if ,pr ,val1 ,val2)]
+            [(begin ,[normalize-effect -> ef*] ... ,[normalize-value -> val]) (make-begin `(,ef* ... ,val))]
+            [(let ([,uv* ,[normalize-value -> val1*]] ...) ,[normalize-value -> val2]) `(let ([,uv* ,val1*] ...) ,val2)]
+            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp val-prim*))
+                `(,vp ,val* ...)]
+            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp pr-prim*))
+                `(if (,pp ,val* ...) '#t '#f)]
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+                (make-begin `((,ep ,val* ...) (void)))]
+            [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) `(,val1 ,val2* ...)]))
+    
+    (define (normalize-pred pred)
+        (match pred
+            [,lb (guard (label? lb)) `(true)]
+            [,uv (guard (uvar? uv)) `(if (eq? ,uv '#f) (false) (true))]
+            [(quote ,imm) (if imm `(true) `(false))]
+            [(if ,[normalize-pred -> pr1] ,[normalize-pred -> pr2] ,[normalize-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
+            [(begin ,[normalize-effect -> ef*] ... ,[normalize-pred -> pr]) (make-begin `(,ef* ... ,pr))]
+            [(let ([,uv* ,[normalize-value -> val*]] ...) ,[normalize-pred -> pr]) `(let ([,uv* ,val*] ...) ,pr)]
+            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp pr-prim*))
+                `(,pp ,val* ...)]
+            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp val-prim*))
+                `(if (eq? (,vp ,val* ...) '#f) (false) (true))]
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+                (make-begin `((,ep ,val* ...) (true)))]
+            [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) 
+                `(if (eq? (,val1 ,val2* ...) '#f) (false) (true))]))
+    
+    (define (normalize-effect effect)
+        (match effect
+            [,lb (guard (label? lb)) `(nop)]
+            [,uv (guard (uvar? uv)) `(nop)]
+            [(quote ,imm) `(nop)]
+            [(if ,[normalize-pred -> pr] ,[normalize-effect -> ef1] ,[normalize-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
+            [(begin ,[normalize-effect -> ef1*] ... ,[normalize-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
+            [(let ([,uv* ,[normalize-value -> val*]] ...) ,[normalize-effect -> ef]) `(let ([,uv* ,val*] ...) ,ef)]
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+                `(,ep ,val* ...)]
+            [(,pp ,[normalize-effect -> ef*] ...) (guard (memq pp pr-prim*))
+                (make-nopless-begin ef*)]
+            [(,vp ,[normalize-effect -> ef*] ...) (guard (memq vp val-prim*))
+                (make-nopless-begin ef*)]
+            [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) `(,val1 ,val2* ...)]))
+    
+    (normalize-program program))
 
 ;   specify representation
 ;   discard different data types
@@ -206,12 +312,6 @@
 
     (remove-program program))
 
-(define (deep-copy obj)
-    (cond
-        ((null? obj) '())
-        ((pair? obj) (cons (deep-copy (car obj)) (deep-copy (cdr obj))))
-        (else obj)))
-        
 ;   verify-uil
 ;   do nothing
 
@@ -1684,17 +1784,67 @@
 
     (expose-program program))
 
+;   optimize-jumps
+;   compress simple lambdas(jump)
+
+(define (optimize-jumps program)
+    (define ls `())
+    (define lb-loop (unique-label `loop))
+    (define (opt-program program)
+        (match program
+            [(letrec ,bl* ,tl)
+                (let-values ([(new-bl* assoc-ls) (check bl*)])
+                    (set! ls (deep-copy assoc-ls))
+                    (let ([bl-loop `[,lb-loop (lambda () (,lb-loop))]])
+                        `(letrec ,(cons bl-loop (map opt-block new-bl*)) ,(opt-tail tl))))]))
+
+    (define (check block*)
+        (if (null? block*)
+            (values `() `())
+            (let-values ([(bl* assoc-ls) (check (cdr block*))])
+                (match (car block*)
+                    [[,lb1 (lambda () (,lb2)) (guard (label? lb2))]
+                        (values bl* (cons `(,lb1 ,lb2) assoc-ls))]
+                    [[,lb (lambda () ,tl)]
+                        (values (cons (car block*) bl*) assoc-ls)]))))
+    
+    (define (find st)
+        (let ([res (dfs st `())])
+            (if res res lb-loop)))
+    (define (dfs cur vis)
+        (if (memq cur vis)
+            #f
+            (if (assq cur ls)
+                (dfs (cadr (assq cur ls)) (cons cur vis))
+                cur)))
+    
+    (define (opt-block block)
+        (match block
+            [[,lb (lambda () ,[opt-tail -> tl])]
+                `[,lb (lambda () ,tl)]]))
+    (define (opt-tail tail)
+        (match tail
+            [(if ,pr (,lb1) (,lb2)) `(if ,pr (,(find lb1)) (,(find lb2)))]
+            [(begin ,[opt-effect -> ef*] ... ,[opt-tail -> tl]) `(begin ,ef* ... ,tl)]
+            [(,tr) `(,(find tr))]))
+    (define (opt-effect effect)
+        (match effect
+            [(set! ,loc ,tr) `(set! ,loc ,(find tr))]
+            [(set! ,loc (binop ,loc_ ,tr)) `(set! ,loc (binop ,loc_ ,(find tr)))]))
+    
+    (opt-program program))
+
 ;   flatten-program
 ;   no begin& letrec; add jump
 
 (define (flatten-program program)
     (define (flat-tail tail label-next)
         (match tail
-            [(if (,relop ,tr1 ,tr2) (,lb1) (,lb2))
+            [(if ,pr (,lb1) (,lb2))
                 (cond 
-                    [(eq? label-next lb2) `((if (,relop ,tr1 ,tr2) (jump ,lb1)))]
-                    [(eq? label-next lb1) `((if (not (,relop ,tr1 ,tr2)) (jump ,lb2)))]
-                    [else `((if (,relop ,tr1 ,tr2) (jump ,lb1)) (jump ,lb2))])
+                    [(eq? label-next lb2) `((if ,pr (jump ,lb1)))]
+                    [(eq? label-next lb1) `((if (not ,pr) (jump ,lb2)))]
+                    [else `((if ,pr (jump ,lb1)) (jump ,lb2))])
                 ]
             [(begin ,ef* ... ,tl)
                 (append ef* (flat-tail tl label-next))]
