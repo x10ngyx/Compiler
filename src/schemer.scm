@@ -3,11 +3,106 @@
         ((null? obj) '())
         ((pair? obj) (cons (deep-copy (car obj)) (deep-copy (cdr obj))))
         (else obj)))
+
+(define (make-let as ex)
+    (if (null? as) ex `(let ,as ,ex)))
+(define (make-letrec as ex)
+    (if (null? as) ex `(letrec ,as ,ex)))
         
 ;   verify-scheme
 ;   do nonthing
 
 (define (verify-scheme x) x)
+
+;   optimize-direct-call
+;   transfrom some anonymous lambda into let expressions
+
+(define (optimize-direct-call expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (opt-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(lambda ,para* ,[opt-expr -> ex]) `(lambda ,para* ,ex)]
+            [(if ,[opt-expr -> ex1] ,[opt-expr -> ex2] ,[opt-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[opt-expr -> ex1*] ... ,[opt-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[opt-expr -> ex1*]] ...) ,[opt-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(letrec ([,uv* (lambda ,para** ,[opt-expr -> ex1*])] ...) ,[opt-expr -> ex2])
+                `(letrec ([,uv* (lambda ,para** ,ex1*)] ...) ,ex2)]
+            [(,p ,[opt-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [((lambda ,para* ,[opt-expr -> ex1]) ,[opt-expr -> ex2*] ...) `(let ([,para* ,ex2*] ...) ,ex1)]
+            [(,[opt-expr -> ex1] ,[opt-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+
+    (opt-expr expr))
+
+;   remove-anonymous-lambda
+;   each anonymous lambda will be given a name
+
+(define (remove-anonymous-lambda expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (let-helper expr)
+        (match expr
+            [(lambda ,para* ,[remove-expr -> ex]) `(lambda ,para* ,ex)]
+            [,[remove-expr -> ex] ex]))
+
+    (define (remove-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(lambda ,para* ,[remove-expr -> ex]) 
+                (let ([uv (unique-name `anon)])
+                    `(letrec ([,uv (lambda ,para* ,ex)]) ,uv))]
+            [(if ,[remove-expr -> ex1] ,[remove-expr -> ex2] ,[remove-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[remove-expr -> ex1*] ... ,[remove-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[let-helper -> ex1*]] ...) ,[remove-expr -> ex2])
+                `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(letrec ([,uv* (lambda ,para** ,[remove-expr -> ex1*])] ...) ,[remove-expr -> ex2])
+                `(letrec ([,uv* (lambda ,para** ,ex1*)] ...) ,ex2)]
+            [(,p ,[remove-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[remove-expr -> ex1] ,[remove-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+
+    (remove-expr expr))
+
+;   sanitize-binding-forms
+;   (let ([a (lambda ...)])) -> (letrec)
+
+(define (sanitize-binding-forms expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (filter uvar* expr*)
+        (if (null? expr*)
+            (values `() `())
+            (let-values ([(proc* other*) (filter (cdr uvar*) (cdr expr*))])
+                (let ([uvar (car uvar*)]
+                      [expr (car expr*)])
+                    (match expr
+                        [(lambda ,para* ,[sanitize-expr -> ex])
+                            (values (cons `[,uvar (lambda ,para* ,ex)] proc*) other*)]
+                        [,[sanitize-expr -> ex]
+                            (values proc* (cons `[,uvar ,ex] other*))])))))
+    (define (sanitize-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(if ,[sanitize-expr -> ex1] ,[sanitize-expr -> ex2] ,[sanitize-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[sanitize-expr -> ex1*] ... ,[sanitize-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,ex1*] ...) ,[sanitize-expr -> ex2])
+                (let-values ([(proc* other*) (filter uv* ex1*)])
+                    (make-letrec proc* (make-let other* ex2)))]
+            [(letrec ([,uv* (lambda ,para** ,[sanitize-expr -> ex1*])] ...) ,[sanitize-expr -> ex2])
+                `(letrec ([,uv* (lambda ,para** ,ex1*)] ...) ,ex2)]
+            [(,p ,[sanitize-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[sanitize-expr -> ex1] ,[sanitize-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+
+    (sanitize-expr expr))
 
 ;   uncover-free
 ;   find free variables in each procedure
@@ -64,11 +159,46 @@
             [(,[convert-expr -> ex1] ,[convert-expr -> ex2*] ...) `(,ex1 ,ex2* ...)
                 (if (uvar? ex1)
                     `(,ex1 ,ex1 ,ex2* ...)
-                    (let ([tmp (unique-name `temp)])
+                    (let ([tmp (unique-name `convert)])
                         `(let ([,tmp ,ex1])
                             (,tmp ,tmp ,ex2* ...))))]))
     
     (convert-expr expr))
+
+;   optimize-known-call
+;   for known calls, give the label directly instead of using procedure-code
+
+(define (optimize-known-call expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (opt-expr proc*)
+        (lambda (expr)
+            (match expr
+                [,uv (guard (uvar? uv)) expr]
+                [(quote ,imm) expr]
+                [(lambda ,para* ,[(opt-expr proc*) -> ex]) `(lambda ,para* ,ex)]
+                [(if ,[(opt-expr proc*) -> ex1] ,[(opt-expr proc*) -> ex2] ,[(opt-expr proc*) -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+                [(begin ,[(opt-expr proc*) -> ex1*] ... ,[(opt-expr proc*) -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+                [(let ([,uv* ,[(opt-expr proc*) -> ex1*]] ...) ,[(opt-expr proc*) -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+                [(letrec ([,lb* (lambda (,cp* ,para** ...)
+                                        (bind-free (,cp_* ,fuv** ...) ,ex1*))] ...)
+                         (closures ([,uv* ,lb_* ,fuv_** ...] ...) ,ex2))
+                    (let* ([new-proc* (append proc* uv*)]
+                           [new-ex1* (map (opt-expr new-proc*) ex1*)]
+                           [new-ex2 ((opt-expr new-proc*) ex2)])
+                        `(letrec ([,lb* (lambda (,cp* ,para** ...)
+                                        (bind-free (,cp_* ,fuv** ...) ,new-ex1*))] ...)
+                                 (closures ([,uv* ,lb_* ,fuv_** ...] ...) ,new-ex2)))]
+                [(,p ,[(opt-expr proc*) -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+                [((lambda ,para* ,[(opt-expr proc*) -> ex1]) ,[(opt-expr proc*) -> ex2*] ...) `(let ([,para* ,ex2*] ...) ,ex1)]
+                [(,ex1 ,[(opt-expr proc*) -> ex2*] ...)
+                    (if (memq ex1 proc*)
+                        `(,(unique-label ex1) ,ex2* ...)
+                        `(,ex1 ,ex2* ...))])))
+
+    ((opt-expr `()) expr))
 
 ;   introduce-procedure-primitives
 ;   use closure to handle free variables 
@@ -126,8 +256,10 @@
                 [(letrec ([,lb* ,[intro-lambda -> ex1*]] ...) ,[(intro-closure cp fuv*) -> ex2])
                     `(letrec ([,lb* ,ex1*] ...) ,ex2)]
                 [(,p ,[(intro-expr cp fuv*) -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
-                [(,[(intro-expr cp fuv*) -> proc] ,[(intro-expr cp fuv*) -> arg1] ,[(intro-expr cp fuv*) -> arg*] ...)
-                    `((procedure-code ,proc) ,arg1 ,arg* ...)])))
+                [(,proc ,[(intro-expr cp fuv*) -> arg1] ,[(intro-expr cp fuv*) -> arg*] ...)
+                    (if (label? proc)
+                        `(,proc ,arg1 ,arg* ...)
+                        `((procedure-code ,((intro-expr cp fuv*) proc)) ,arg1 ,arg* ...))])))
     ((intro-expr `() `()) expr))
 
 ;   lift-letrec
