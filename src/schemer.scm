@@ -14,6 +14,198 @@
 
 (define (verify-scheme x) x)
 
+;   convert-complex-datum
+;   discard complex quote forms
+
+(define (convert-complex-datum expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define constant* `())
+    (define expr* `())
+
+    (define (convert-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,dat)
+                (if (or (pair? dat) (vector? dat))
+                    (let ([uv (unique-name `constant)]
+                          [ex (convert-datum dat)])
+                        (set! constant* (cons uv constant*))
+                        (set! expr* (cons (deep-copy ex) expr*))
+                        uv)
+                    `(quote ,dat))]
+            [(lambda ,para* ,[convert-expr -> ex]) `(lambda ,para* ,ex)]
+            [(if ,[convert-expr -> ex1] ,[convert-expr -> ex2] ,[convert-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[convert-expr -> ex1*] ... ,[convert-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(letrec ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) `(letrec ([,uv* ,ex1*] ...) ,ex2)]
+            [(set! ,uv ,[convert-expr -> ex]) `(set! ,uv ,ex)]
+            [(,p ,[convert-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[convert-expr -> ex1] ,[convert-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+    
+    (define (helper vec dat cnt)
+        (if (= cnt (vector-length dat))
+            `()
+            (let ([res (helper vec dat (+ 1 cnt))]
+                  [fir `(vector-set! ,vec (quote ,cnt) ,(convert-datum (vector-ref dat cnt)))])
+                  (cons fir res))))
+
+    (define (make-vector datum)
+        (let* ([uv (unique-name `vec)]
+               [vector-set* (helper uv datum 0)])
+            (match datum [,x ; in order to use ... 
+                `(let ([,uv (make-vector (quote ,(vector-length datum)))])
+                    ,(make-begin `(,vector-set* ... ,uv)))])))
+    
+    (define (make-pair datum)
+        (let ([fir (convert-datum (car datum))]
+              [sec (convert-datum (cdr datum))])
+            `(cons ,fir ,sec)))
+
+    (define (convert-datum datum)
+        (cond   
+            [(vector? datum) (make-vector datum)]
+            [(pair? datum) (make-pair datum)]
+            [else `(quote ,datum)]))
+
+    (let* ([new-ex (convert-expr expr)]
+           [cp-expr* (deep-copy expr*)])
+        (match expr [,x ; in order to use ...
+            (make-let `([,constant* ,cp-expr*] ...) new-ex)])))
+
+;   uncover-assigned
+;   find all assigned variables and record them in (assign) form
+
+(define (uncover-assigned expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (uncover-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) (values expr `())]
+            [(quote ,imm) (values expr `())]
+            [(lambda ,para* ,[uncover-expr -> ex uv*])
+                (values `(lambda ,para* (assigned ,(intersection para* uv*) ,ex))
+                        (difference uv* para*))]
+            [(if ,[uncover-expr -> ex1 uv1*] ,[uncover-expr -> ex2 uv2*] ,[uncover-expr -> ex3 uv3*])
+                (values `(if ,ex1 ,ex2 ,ex3) (union uv1* uv2* uv3*))]
+            [(begin ,[uncover-expr -> ex1* uv1**] ... ,[uncover-expr -> ex2 uv2*])
+                (values (make-begin `(,ex1* ... ,ex2)) (union uv2* (apply union uv1**)))]
+            [(let ([,uv* ,[uncover-expr -> ex1* uv1**]] ...) ,[uncover-expr -> ex2 uv2*])
+                (values `(let ([,uv* ,ex1*] ...) (assigned ,(intersection uv* uv2*) ,ex2))
+                        (union (difference uv2* uv*) (apply union uv1**)))]
+            [(letrec ([,uv* ,[uncover-expr -> ex1* uv1**]] ...) ,[uncover-expr -> ex2 uv2*])
+                (let ([as-uv* (union uv2* (apply union uv1**))])
+                    (values `(letrec ([,uv* ,ex1*] ...) (assigned ,(intersection uv* as-uv*) ,ex2))
+                        (difference as-uv* uv*)))]
+            [(set! ,uv ,[uncover-expr -> ex uv*])
+                (values `(set! ,uv ,ex) (set-cons uv uv*))]
+            [(,p ,[uncover-expr -> ex* uv**] ...) (guard (memq p prim*)) 
+                (values `(,p ,ex* ...) (apply union uv**))]
+            [(,[uncover-expr -> ex1 uv1*] ,[uncover-expr -> ex2* uv2**] ...) 
+                (values `(,ex1 ,ex2* ...) (union uv1* (apply union uv2**)))]))
+
+    (let-values ([(ex uv*) (uncover-expr expr)]) ex))
+
+;   purify-letrec
+;   all letrec expressions should be pure
+
+(define (purify-letrec expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (lambdas? expr*)
+        (if (null? expr*)
+            #t
+            (let ([res (lambdas? (cdr expr*))]
+                  [fir (car expr*)])
+                (match fir
+                    [(lambda ,para* ,ex) res]
+                    [,x #f]))))
+
+    (define (purify-expr expr)
+        (match expr
+            [,uv (guard (uvar? uv)) expr]
+            [(quote ,imm) expr]
+            [(lambda ,para* (assigned ,as-para* ,[purify-expr -> ex]))
+                `(lambda ,para* (assigned ,as-para* ,ex))]
+            [(if ,[purify-expr -> ex1] ,[purify-expr -> ex2] ,[purify-expr -> ex3])
+                `(if ,ex1 ,ex2 ,ex3)]
+            [(begin ,[purify-expr -> ex1*] ... ,[purify-expr -> ex2])
+                (make-begin `(,ex1* ... ,ex2))]
+            [(let ([,uv* ,[purify-expr -> ex1*]] ...) (assigned ,as-uv* ,[purify-expr -> ex2]))
+                `(let ([,uv* ,ex1*] ...) (assigned ,as-uv* ,ex2))]
+            [(letrec ([,uv* ,[purify-expr -> ex1*]] ...) (assigned ,as-uv* ,[purify-expr -> ex2]))
+                (if (and (lambdas? ex1*) (null? as-uv*))
+                    `(letrec ([,uv* ,ex1*] ...) ,ex2)
+                    (let* ([tmp-uv* (map unique-name uv*)]
+						   [set* `((set! ,uv* ,tmp-uv*) ...)])
+						`(let ([,uv* (void)] ...) (assigned ,uv*
+							(begin
+								(let ([,tmp-uv* ,ex1*] ...) (assigned () (begin ,set* ...)))
+								,ex2)))))]
+            [(set! ,uv ,[purify-expr -> ex]) `(set! ,uv ,ex)]
+            [(,p ,[purify-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,[purify-expr -> ex1] ,[purify-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
+
+    (purify-expr expr))
+
+;   convert-assignments
+;   store assigned variables in heap area
+
+(define (convert-assignments expr)
+    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define ef-prim* `(set-car! set-cdr! vector-set!))
+    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define (f assoc*)
+        (lambda (x) 
+            (if (assq x assoc*)
+                (cdr (assq x assoc*))
+                x)))
+
+    (define (convert-expr assigned-uv*)
+        (lambda (expr)
+            (match expr
+                [,uv (guard (uvar? uv))
+                    (if (memq uv assigned-uv*) `(car ,uv) uv)]
+                [(quote ,imm) expr]
+                [(lambda ,para* (assigned ,as-uv* ,ex))
+                    (let* ([tmp-uv* (map unique-name as-uv*)]
+                           [assoc* `((,as-uv* . ,tmp-uv*) ...)]
+                           [new-para* (map (f assoc*) para*)])
+                        `(lambda ,new-para* 
+                            ,(make-let `([,as-uv* (cons ,tmp-uv* (void))] ...)
+                                       ((convert-expr (append assigned-uv* as-uv*)) ex))))]
+                [(if ,[(convert-expr assigned-uv*) -> ex1] 
+                     ,[(convert-expr assigned-uv*) -> ex2] 
+                     ,[(convert-expr assigned-uv*) -> ex3])
+                    `(if ,ex1 ,ex2 ,ex3)]
+                [(begin ,[(convert-expr assigned-uv*) -> ex1*] ... ,[(convert-expr assigned-uv*) -> ex2])
+                    (make-begin `(,ex1* ... ,ex2))]
+                [(let ([,uv* ,[(convert-expr assigned-uv*) -> ex1*]] ...) (assigned ,as-uv* ,ex2))
+                    (let* ([tmp-uv* (map unique-name as-uv*)]
+                           [assoc* `((,as-uv* . ,tmp-uv*) ...)]
+                           [new-uv* (map (f assoc*) uv*)])
+                        (make-let `([,new-uv* ,ex1*] ...) 
+                                  (make-let `([,as-uv* (cons ,tmp-uv* (void))] ...)
+                                            ((convert-expr (append assigned-uv* as-uv*)) ex2))))]
+                [(letrec ([,uv* ,[(convert-expr assigned-uv*) -> ex1*]] ...) ,[(convert-expr assigned-uv*) -> ex2])
+                    `(letrec ([,uv* ,ex1*] ...) ,ex2)]
+                [(set! ,uv ,[(convert-expr assigned-uv*) -> ex])
+                    (if (memq uv assigned-uv*)
+                        `(set-car! ,uv ,ex)
+                        `(set! ,uv ,ex))]
+                [(,p ,[(convert-expr assigned-uv*) -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+                [(,[(convert-expr assigned-uv*) -> ex1] ,[(convert-expr assigned-uv*) -> ex2*] ...)
+                    `(,ex1 ,ex2* ...)])))
+
+    ((convert-expr `()) expr))
+
 ;   optimize-direct-call
 ;   transfrom some anonymous lambda into let expressions
 
