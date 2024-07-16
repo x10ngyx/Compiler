@@ -8,20 +8,138 @@
     (if (null? as) ex `(let ,as ,ex)))
 (define (make-letrec as ex)
     (if (null? as) ex `(letrec ,as ,ex)))
-        
-;   verify-scheme
-;   do nonthing
 
-(define (verify-scheme x) x)
+(define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
+(define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+(define ef-prim* `(set-car! set-cdr! vector-set!))
+(define prim* (append val-prim* pr-prim* ef-prim*))
+        
+;   parse-scheme
+;   var -> uvar
+;   add and / or / not / one-armed if / imm / expr+ ...
+
+(define (parse-scheme expr)
+    (define (prim->len p)
+        (match p
+            [+ 2] [- 2] [* 2] [car 1] [cdr 1] [cons 2] [make-vector 1] [vector-length 1] [vector-ref 2] [void 0]
+            [<= 2] [< 2] [= 2] [> 2] [>= 2] [boolean? 1] [eq? 2] [fixnum? 1] [null? 1] [pair? 1] [vector? 1] [procedure? 1]
+            [set-car! 2] [set-cdr! 2] [vector-set! 3]))
+
+    (define (parse-and expr*)
+        (case (length expr*)
+            [0 `(quote #t)]
+            [1 (car expr*)]
+            [else `(if ,(car expr*) 
+                        ,(parse-and (cdr expr*))
+                        (quote #f))]))
+    (define (parse-or expr*)
+        (case (length expr*)
+            [0 `(quote #f)]
+            [1 (car expr*)]
+            [else 
+                (let ([uv (unique-name `por)])
+                    (make-let `([,uv ,(car expr*)]) 
+                              `(if ,uv ,uv ,(parse-or (cdr expr*)))))]))
+
+    (define (parse-vector vec cnt)
+        (if (= cnt (vector-length vec))
+            #t
+            (let ([res (parse-vector vec (+ 1 cnt))]
+                  [fir (parse-datum (vector-ref vec cnt))])
+                  (and res fir))))
+    (define (parse-pair p)
+        (if (and (parse-datum (car p)) (parse-datum (cdr p))) #t #f))
+
+    (define (parse-datum dat)
+        (if (immediate? dat)
+            #t
+            (cond
+                [(pair? dat) (parse-pair dat)]
+                [(vector? dat) (parse-vector dat 0)]
+                [else #f])))
+    (define (immediate? imm)
+        (cond
+            [(eq? imm #t) #t]
+            [(eq? imm #f) #t]
+            [(eq? imm `()) #t]
+            [(and (integer? imm) (exact? imm) (fixnum-range? imm)) #t]
+            [else #f]))
+
+    (define (parse-expr env)
+        (lambda (expr)
+            (match expr
+                [(if ,[(parse-expr env) -> ex1] ,[(parse-expr env) -> ex2]) 
+                    (guard (not (assq `if env))) `(if ,ex1 ,ex2 (void))]
+                [(if ,[(parse-expr env) -> ex1] ,[(parse-expr env) -> ex2] ,[(parse-expr env) -> ex3])
+                    (guard (not (assq `if env))) `(if ,ex1 ,ex2 ,ex3)]
+                [(and ,[(parse-expr env) -> ex*] ...)
+                    (guard (not (assq `and env))) (parse-and ex*)]
+                [(or ,[(parse-expr env) -> ex*] ...)
+                    (guard (not (assq `or env))) (parse-or ex*)]
+                [(begin ,[(parse-expr env) -> ex1*] ... ,[(parse-expr env) -> ex2])
+                    (guard (not (assq `begin env))) (make-begin `(,ex1* ... ,ex2))]
+                [(lambda ,para* ,ex1* ... ,ex2)
+                    (guard (not (assq `lambda env)))
+                        ; to do: verify that all paras are symbol and pairwisely different
+                        (let* ([uv* (map unique-name para*)]
+                               [new-env (append `([,para* . ,uv*] ...) env)]
+                               [new-ex1* (map (parse-expr new-env) ex1*)]
+                               [new-ex2 ((parse-expr new-env) ex2)])
+                            `(lambda ,uv*
+                                ,(make-begin `(,new-ex1* ... ,new-ex2))))]
+                [(let ([,v* ,[(parse-expr env) -> ex1*]] ...) ,ex2* ... ,ex3)
+                    (guard (not (assq `let env)))
+                        ; to do: verify that all paras are symbol and pairwisely different
+                        (let* ([uv* (map unique-name v*)]
+                               [new-env (append `([,v* . ,uv*] ...) env)]
+                               [new-ex2* (map (parse-expr new-env) ex2*)]
+                               [new-ex3 ((parse-expr new-env) ex3)])
+                            (make-let `([,uv* ,ex1*] ...)
+                                      (make-begin `(,new-ex2* ... ,new-ex3))))]
+                [(letrec ([,v* ,ex1*] ...) ,ex2* ... ,ex3)
+                    (guard (not (assq `letrec env)))
+                        ; to do: verify that all paras are symbol and pairwisely different
+                        (let* ([uv* (map unique-name v*)]
+                               [new-env (append `([,v* . ,uv*] ...) env)]
+                               [new-ex1* (map (parse-expr new-env) ex1*)]
+                               [new-ex2* (map (parse-expr new-env) ex2*)]
+                               [new-ex3 ((parse-expr new-env) ex3)])
+                            (make-letrec `([,uv* ,new-ex1*] ...)
+                                         (make-begin `(,new-ex2* ... ,new-ex3))))]
+                [(set! ,v ,[(parse-expr env) -> ex])
+                    (guard (not (assq `set! env)))
+                        (if (symbol? v)
+                            (if (assq v env)
+                                `(set! ,(cdr (assq v env)) ,ex)
+                                (error "set!: v is not in env " v))
+                            (error "set!: v is not a symbol" v))]
+                [(not ,[(parse-expr env) -> ex])
+                    (guard (not (assq `not env)))
+                        `(if ,ex (quote #f) (quote #t))]
+                [(,p ,[(parse-expr env) -> ex*] ...) 
+                    (guard (and (memq p prim*) (not (assq p env))))
+                        (if (= (length ex*) (prim->len p))
+                            `(,p ,ex* ...) 
+                            (error "prim-call: length mismatch" p))]
+                [(quote ,dat)
+                    (guard (not (assq `quote env)))
+                        (if (parse-datum dat)
+                            `(quote ,dat)
+                            (error "quote: invalid datum" dat))]
+                [,imm (guard (immediate? imm)) `(quote ,imm)]
+                [,v (guard (symbol? v))
+                    (if (assq v env)
+                        (cdr (assq v env))
+                        (error "var: v is not in env" v))]
+                [(,[(parse-expr env) -> ex1] ,[(parse-expr env) -> ex2*] ...) `(,ex1 ,ex2* ...)]
+                [,x (error "unknown fault" x)])))
+
+    ((parse-expr `()) expr))
 
 ;   convert-complex-datum
-;   discard complex quote forms
+;   (quote dat) -> (quote imm)
 
 (define (convert-complex-datum expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define constant* `())
     (define expr* `())
 
@@ -39,8 +157,8 @@
             [(lambda ,para* ,[convert-expr -> ex]) `(lambda ,para* ,ex)]
             [(if ,[convert-expr -> ex1] ,[convert-expr -> ex2] ,[convert-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
             [(begin ,[convert-expr -> ex1*] ... ,[convert-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
-            [(let ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
-            [(letrec ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) `(letrec ([,uv* ,ex1*] ...) ,ex2)]
+            [(let ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) (make-let `([,uv* ,ex1*] ...) ex2)]
+            [(letrec ([,uv* ,[convert-expr -> ex1*]] ...) ,[convert-expr -> ex2]) (make-letrec `([,uv* ,ex1*] ...) ex2)]
             [(set! ,uv ,[convert-expr -> ex]) `(set! ,uv ,ex)]
             [(,p ,[convert-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
             [(,[convert-expr -> ex1] ,[convert-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
@@ -56,8 +174,8 @@
         (let* ([uv (unique-name `vec)]
                [vector-set* (helper uv datum 0)])
             (match datum [,x ; in order to use ... 
-                `(let ([,uv (make-vector (quote ,(vector-length datum)))])
-                    ,(make-begin `(,vector-set* ... ,uv)))])))
+                (make-let `([,uv (make-vector (quote ,(vector-length datum)))])
+                          (make-begin `(,vector-set* ... ,uv)))])))
     
     (define (make-pair datum)
         (let ([fir (convert-datum (car datum))]
@@ -76,13 +194,9 @@
             (make-let `([,constant* ,cp-expr*] ...) new-ex)])))
 
 ;   uncover-assigned
-;   find all assigned variables and record them in (assign) form
+;   find all assigned variables and record them in (assigned) form
 
 (define (uncover-assigned expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (uncover-expr expr)
         (match expr
             [,uv (guard (uvar? uv)) (values expr `())]
@@ -111,13 +225,10 @@
     (let-values ([(ex uv*) (uncover-expr expr)]) ex))
 
 ;   purify-letrec
-;   all letrec expressions should be pure
+;   all letrec expressions should be pure, i.e., are lambda expressions and not assigned
+;   otherwise we will convert it to (let (let (set!)))
 
 (define (purify-letrec expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (lambdas? expr*)
         (if (null? expr*)
             #t
@@ -155,13 +266,10 @@
     (purify-expr expr))
 
 ;   convert-assignments
-;   store assigned variables in heap area
+;   convert all assigned variable into (car x) & (set-car! x)
+;   1. store imm in heap area 2. modify the data instead of the pointer
 
 (define (convert-assignments expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (f assoc*)
         (lambda (x) 
             (if (assq x assoc*)
@@ -207,13 +315,9 @@
     ((convert-expr `()) expr))
 
 ;   optimize-direct-call
-;   transfrom some anonymous lambda into let expressions
+;   transfrom those def-when-used anonymous lambda into let expressions
 
 (define (optimize-direct-call expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (opt-expr expr)
         (match expr
             [,uv (guard (uvar? uv)) expr]
@@ -221,11 +325,11 @@
             [(lambda ,para* ,[opt-expr -> ex]) `(lambda ,para* ,ex)]
             [(if ,[opt-expr -> ex1] ,[opt-expr -> ex2] ,[opt-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
             [(begin ,[opt-expr -> ex1*] ... ,[opt-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
-            [(let ([,uv* ,[opt-expr -> ex1*]] ...) ,[opt-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(let ([,uv* ,[opt-expr -> ex1*]] ...) ,[opt-expr -> ex2]) (make-let `([,uv* ,ex1*] ...) ex2)]
             [(letrec ([,uv* (lambda ,para** ,[opt-expr -> ex1*])] ...) ,[opt-expr -> ex2])
                 `(letrec ([,uv* (lambda ,para** ,ex1*)] ...) ,ex2)]
             [(,p ,[opt-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
-            [((lambda ,para* ,[opt-expr -> ex1]) ,[opt-expr -> ex2*] ...) `(let ([,para* ,ex2*] ...) ,ex1)]
+            [((lambda ,para* ,[opt-expr -> ex1]) ,[opt-expr -> ex2*] ...) (make-let `([,para* ,ex2*] ...) ex1)]
             [(,[opt-expr -> ex1] ,[opt-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
 
     (opt-expr expr))
@@ -234,10 +338,6 @@
 ;   each anonymous lambda will be given a name
 
 (define (remove-anonymous-lambda expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (let-helper expr)
         (match expr
             [(lambda ,para* ,[remove-expr -> ex]) `(lambda ,para* ,ex)]
@@ -262,13 +362,10 @@
     (remove-expr expr))
 
 ;   sanitize-binding-forms
-;   (let ([a (lambda ...)])) -> (letrec)
+;   at this point, letrec is okay, however let may bind a lambda exoression
+;   (let ([x (lambda ...)])) -> (letrec)
 
 (define (sanitize-binding-forms expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (filter uvar* expr*)
         (if (null? expr*)
             (values `() `())
@@ -290,7 +387,7 @@
                 (let-values ([(proc* other*) (filter uv* ex1*)])
                     (make-letrec proc* (make-let other* ex2)))]
             [(letrec ([,uv* (lambda ,para** ,[sanitize-expr -> ex1*])] ...) ,[sanitize-expr -> ex2])
-                `(letrec ([,uv* (lambda ,para** ,ex1*)] ...) ,ex2)]
+                (make-letrec `([,uv* (lambda ,para** ,ex1*)] ...) ex2)]
             [(,p ,[sanitize-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
             [(,[sanitize-expr -> ex1] ,[sanitize-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
 
@@ -300,10 +397,6 @@
 ;   find free variables in each procedure
 
 (define (uncover-free expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (uncover-expr expr)
         (match expr
             [,uv (guard (uvar? uv)) (values expr `(,uv))]
@@ -326,13 +419,9 @@
     (let-values ([(ex uv*) (uncover-expr expr)]) ex))
 
 ;   convert-closures
-;   add closure form and some other changes
+;   add cp; add label; add closure form
 
 (define (convert-closures expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (create-cp x) (unique-name `cp))
     (define (convert-expr expr)
         (match expr
@@ -361,10 +450,6 @@
 ;   for known calls, give the label directly instead of using procedure-code
 
 (define (optimize-known-call expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (opt-expr proc*)
         (lambda (expr)
             (match expr
@@ -393,13 +478,10 @@
     ((opt-expr `()) expr))
 
 ;   introduce-procedure-primitives
-;   use closure to handle free variables 
+;   1. use (procedure-ref cp x) to when you need fuvs
+;   2. convert closure form to the def&setting of closures
 
 (define (introduce-procedure-primitives expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
     (define (kth aim ls cnt)
         (if (eq? aim (car ls))
             cnt
@@ -458,10 +540,10 @@
 ;   bring letrec to the outer layer
 
 (define (lift-letrec expr)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define new-val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
+    (define new-pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define new-ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
+    (define new-prim* (append new-val-prim* new-pr-prim* new-ef-prim*))
     (define proc* `())
     (define (lift-expr expr)
         (match expr
@@ -470,12 +552,12 @@
             [(quote ,imm) expr]
             [(if ,[lift-expr -> ex1] ,[lift-expr -> ex2] ,[lift-expr -> ex3]) `(if ,ex1 ,ex2 ,ex3)]
             [(begin ,[lift-expr -> ex1*] ... ,[lift-expr -> ex2]) (make-begin `(,ex1* ... ,ex2))]
-            [(let ([,uv* ,[lift-expr -> ex1*]] ...) ,[lift-expr -> ex2]) `(let ([,uv* ,ex1*] ...) ,ex2)]
+            [(let ([,uv* ,[lift-expr -> ex1*]] ...) ,[lift-expr -> ex2]) (make-let `([,uv* ,ex1*] ...) ex2)]
             [(letrec ([,lb* (lambda ,para** ,[lift-expr -> ex1*])] ...) ,[lift-expr -> ex2])
                 (begin
                     (set! proc* (append proc* (deep-copy `([,lb* (lambda ,para** ,ex1*)] ...))))
                     ex2)]
-            [(,p ,[lift-expr -> ex*] ...) (guard (memq p prim*)) `(,p ,ex* ...)]
+            [(,p ,[lift-expr -> ex*] ...) (guard (memq p new-prim*)) `(,p ,ex* ...)]
             [(,[lift-expr -> ex1] ,[lift-expr -> ex2*] ...) `(,ex1 ,ex2* ...)]))
 
     (begin
@@ -485,12 +567,13 @@
 
 ;   normalize-context
 ;   distinguish value, pred, effect
+;   based on the grammer structure, make corresponding changes
 
 (define (normalize-context program)
-    (define val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
-    (define pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
-    (define ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
-    (define prim* (append val-prim* pr-prim* ef-prim*))
+    (define new-val-prim* `(+ - * car cdr cons make-vector vector-length vector-ref void make-procedure procedure-code procedure-ref))
+    (define new-pr-prim* `(<= < = > >= boolean? eq? fixnum? null? pair? vector? procedure?))
+    (define new-ef-prim* `(set-car! set-cdr! vector-set! procedure-set!))
+    (define new-prim* (append new-val-prim* new-pr-prim* new-ef-prim*))
     (define (make-nopless-begin x*)
         (let ([x* (remove `(nop) x*)])
             (if (null? x*)
@@ -510,11 +593,11 @@
             [(if ,[normalize-pred -> pr] ,[normalize-value -> val1] ,[normalize-value -> val2]) `(if ,pr ,val1 ,val2)]
             [(begin ,[normalize-effect -> ef*] ... ,[normalize-value -> val]) (make-begin `(,ef* ... ,val))]
             [(let ([,uv* ,[normalize-value -> val1*]] ...) ,[normalize-value -> val2]) `(let ([,uv* ,val1*] ...) ,val2)]
-            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp val-prim*))
+            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp new-val-prim*))
                 `(,vp ,val* ...)]
-            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp pr-prim*))
+            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp new-pr-prim*))
                 `(if (,pp ,val* ...) '#t '#f)]
-            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep new-ef-prim*))
                 (make-begin `((,ep ,val* ...) (void)))]
             [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) `(,val1 ,val2* ...)]))
     
@@ -526,11 +609,11 @@
             [(if ,[normalize-pred -> pr1] ,[normalize-pred -> pr2] ,[normalize-pred -> pr3]) `(if ,pr1 ,pr2 ,pr3)]
             [(begin ,[normalize-effect -> ef*] ... ,[normalize-pred -> pr]) (make-begin `(,ef* ... ,pr))]
             [(let ([,uv* ,[normalize-value -> val*]] ...) ,[normalize-pred -> pr]) `(let ([,uv* ,val*] ...) ,pr)]
-            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp pr-prim*))
+            [(,pp ,[normalize-value -> val*] ...) (guard (memq pp new-pr-prim*))
                 `(,pp ,val* ...)]
-            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp val-prim*))
+            [(,vp ,[normalize-value -> val*] ...) (guard (memq vp new-val-prim*))
                 `(if (eq? (,vp ,val* ...) '#f) (false) (true))]
-            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep new-ef-prim*))
                 (make-begin `((,ep ,val* ...) (true)))]
             [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) 
                 `(if (eq? (,val1 ,val2* ...) '#f) (false) (true))]))
@@ -543,11 +626,11 @@
             [(if ,[normalize-pred -> pr] ,[normalize-effect -> ef1] ,[normalize-effect -> ef2]) `(if ,pr ,ef1 ,ef2)]
             [(begin ,[normalize-effect -> ef1*] ... ,[normalize-effect -> ef2]) (make-begin `(,ef1* ... ,ef2))]
             [(let ([,uv* ,[normalize-value -> val*]] ...) ,[normalize-effect -> ef]) `(let ([,uv* ,val*] ...) ,ef)]
-            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep ef-prim*))
+            [(,ep ,[normalize-value -> val*] ...) (guard (memq ep new-ef-prim*))
                 `(,ep ,val* ...)]
-            [(,pp ,[normalize-effect -> ef*] ...) (guard (memq pp pr-prim*))
+            [(,pp ,[normalize-effect -> ef*] ...) (guard (memq pp new-pr-prim*))
                 (make-nopless-begin ef*)]
-            [(,vp ,[normalize-effect -> ef*] ...) (guard (memq vp val-prim*))
+            [(,vp ,[normalize-effect -> ef*] ...) (guard (memq vp new-val-prim*))
                 (make-nopless-begin ef*)]
             [(,[normalize-value -> val1] ,[normalize-value -> val2*] ...) `(,val1 ,val2* ...)]))
     
@@ -555,6 +638,7 @@
 
 ;   specify representation
 ;   discard different data types
+;   turn back to numeric calculation
 
 (define (specify-representation program)
     (define (specify-program program)
@@ -671,6 +755,8 @@
 
 ;   uncover-locals
 ;   find uvars and add body structure
+;   the 'tail' structure is for the convenience of compiler
+;   from the perspective of programmers, there is no difference between 'tail' and 'value'
 
 (define (uncover-locals program)
     (define (uncover-program program)
@@ -781,11 +867,12 @@
 
 ;   verify-uil
 ;   do nothing
+;   actually, we should verify the correctness of uil
 
 (define (verify-uil x) x) 
 
 ;   remove-complect-opera*
-;   using set!, make all occurrences of value -> triv, also flatten value itself
+;   using set!, make all reference of value -> triv, also flatten value itself
 
 (define (remove-complex-opera* program)
     (define (remove-program program)
@@ -882,6 +969,7 @@
     (remove-program program))
 
 ;   flatten-set!
+;   discard 'value' structure, turn it into multiple set! 
 ;   (set! uvar value) -> (set! uvar triv) / binop / proc / mref / alloc
 
 (define (flatten-set! program)
@@ -942,7 +1030,8 @@
     (flat-program program))
 
 ;   impose-calling-conventions
-;   add set!* for caller and callee, expose (tr, loc* ...)
+;   add set! for caller and callee, expose (tr, loc* ...)
+;   add return-point form
 
 (define (impose-calling-conventions program)
     (define (impose-program program)
@@ -1291,7 +1380,7 @@
     (assign-program program))
 
 ;   assign-new-frame
-;   assign frame location for uv-nfv.x
+;   set frame size & assign frame location for uv-nfv.x
 
 (define (assign-new-frame program)
     (define (assign-program program)
@@ -1370,7 +1459,7 @@
     (assign-program program))
 
 ;   finalize-frame-locations
-;   discard location, r.8 -> fv10, locate form remains
+;   replace the located uvars with locs, r.8 -> fv10, locate form remains
 
 (define (finalize-frame-locations program)
     (define (finalize-program program)
@@ -1774,6 +1863,7 @@
 
 ;   assign-registers
 ;   based on the register-conflict-graph, assign uvars to registers
+;   each function call is independent
 
 (define (assign-registers program)
     (define (remove-node-helper conflict-graph node ctr-list)
@@ -1870,8 +1960,6 @@
 
     (assign-program program))
 
-
-
 ;   assign-frame
 ;   based on the frame-conflict-graph, assign uvars to frame
 
@@ -1964,7 +2052,7 @@
     (discard-program program))
 
 ;   finalize-locations
-;   discard location, r.8 -> rax
+;   discard location form, r.8 -> rax
 
 (define (finalize-locations program)
     (define (finalize-program program)
@@ -2165,7 +2253,7 @@
     (expose-program program))
 
 ;   expose-basic-blocks
-;   'basic' blocks and 'jump' at the end of each block
+;   convert into 'basic' blocks with 'jump' at the end of each block
 
 (define (expose-basic-blocks program)
     ; (tail) -> (tl blks)
@@ -2252,7 +2340,8 @@
     (expose-program program))
 
 ;   optimize-jumps
-;   compress simple lambdas(jump)
+;   compress simple jump
+;   be careful with the loop
 
 (define (optimize-jumps program)
     (define ls `())
